@@ -5,7 +5,7 @@ purchase-month scope. These checks do not parse or verify free-text prose.
 """
 
 import re
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 
 
 def check_document_citations(result: dict) -> dict:
@@ -57,6 +57,13 @@ def check_document_citations(result: dict) -> dict:
 
 # Explicit allowlist: unknown metrics/units cannot acquire a PASS by coincidence.
 METRIC_UNITS = {
+    "decompose_merchandise_change": {
+        "baseline_orders": "orders", "comparison_orders": "orders",
+        "baseline_merchandise_value": "BRL", "comparison_merchandise_value": "BRL",
+        "baseline_average_order_value": "BRL", "comparison_average_order_value": "BRL",
+        "change_value": "BRL", "volume_effect": "BRL", "average_value_effect": "BRL",
+        "reconciliation_difference": "BRL",
+    },
     "get_monthly_metrics": {
         "delivered_orders": "orders",
         "delivered_merchandise_value": "BRL",
@@ -218,7 +225,37 @@ def check_numerical_evidence(result: dict) -> dict:
             continue  # Failed calls contain no arithmetic to verify.
         try:
             _, data = _event(result, index)
-            if tool == "compare_months":
+            if tool == "decompose_merchandise_change":
+                inputs = data["inputs"]
+                n0, n1 = (_number(inputs[key]["delivered_orders"]) for key in ("baseline", "comparison"))
+                v0, v1 = (_number(inputs[key]["delivered_merchandise_value"]) for key in ("baseline", "comparison"))
+                if any(n <= 0 or n != n.to_integral_value() for n in (n0, n1)) or min(v0, v1) < 0:
+                    raise ValueError("Invalid decomposition inputs.")
+                record(index, "Supported decomposition method", data.get("method") == "symmetric_volume_value")
+                with localcontext() as context:
+                    context.prec = 50
+                    a0, a1 = v0 / n0, v1 / n1
+                    expected_volume = ((n1-n0)*(a0+a1)/2).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    expected_value = v1-v0-expected_volume
+                    for field, expected in (("baseline_orders",n0),("comparison_orders",n1),
+                        ("baseline_merchandise_value",v0),("comparison_merchandise_value",v1),
+                        ("change_value",v1-v0),("volume_effect",expected_volume),("average_value_effect",expected_value)):
+                        record(index, "Decomposition " + field, _number(data[field]) == expected)
+                    for field, expected in (("baseline_average_order_value",a0),("comparison_average_order_value",a1)):
+                        record(index, field, _same_displayed_number(_number(data[field]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),expected,"BRL"))
+                residual = _number(data["change_value"]) - _number(data["volume_effect"]) - _number(data["average_value_effect"])
+                record(index, "Decomposition reconciles", residual == 0 and _number(data["reconciliation_difference"]) == 0 and data.get("reconciled") is True)
+                for side, month_field in (("baseline","baseline_month"),("comparison","comparison_month")):
+                    row = inputs[side]
+                    record(index, side + " input month", _month(row["purchase_month"]) == data[month_field] == event.get("arguments",{}).get(month_field))
+                    matches = [other["result"]["metrics"] for other in result.get("evidence",[])
+                        if other.get("tool") == "get_monthly_metrics" and other.get("arguments",{}).get("month") == data[month_field]
+                        and isinstance(other.get("result"),dict) and "metrics" in other["result"]]
+                    record(index, side + " inputs match monthly evidence", bool(matches) and all(
+                        _number(match["delivered_orders"]) == _number(row["delivered_orders"])
+                        and _number(match["delivered_merchandise_value"]) == _number(row["delivered_merchandise_value"])
+                        for match in matches))
+            elif tool == "compare_months":
                 baseline = _number(data["baseline_merchandise_value"])
                 comparison = _number(data["comparison_merchandise_value"])
                 difference = comparison - baseline
@@ -358,6 +395,46 @@ def _self_test():
             for value in (True, "NaN", "Infinity", "25,00"):
                 self.result["claims"][0]["value"] = value
                 self.assertEqual(check_numerical_claims(self.result)["status"], "FAIL")
+
+        def decomposition_result(self):
+            def monthly(month, count, value):
+                return {"currency":"BRL", "metrics":{"purchase_month":month+"-01",
+                    "delivered_orders":count,"delivered_merchandise_value":value,
+                    "average_merchandise_value_per_order":str(Decimal(value)/count),
+                    "assessable_delivery_orders":count,"late_orders":0,"late_delivery_pct":"0"}}
+            baseline=monthly("2017-11",10,"100")
+            comparison=monthly("2017-12",5,"40")
+            args={"baseline_month":"2017-11","comparison_month":"2017-12"}
+            data={**args,"currency":"BRL","method":"symmetric_volume_value",
+                "baseline_orders":10,"comparison_orders":5,"baseline_merchandise_value":"100",
+                "comparison_merchandise_value":"40","baseline_average_order_value":"10",
+                "comparison_average_order_value":"8","change_value":"-60","volume_effect":"-45",
+                "average_value_effect":"-15","reconciliation_difference":"0","reconciled":True,
+                "inputs":{"baseline":baseline["metrics"],"comparison":comparison["metrics"]}}
+            return {"answer":"", "evidence":[
+                {"tool":"get_monthly_metrics","arguments":{"month":"2017-11"},"result":baseline},
+                {"tool":"get_monthly_metrics","arguments":{"month":"2017-12"},"result":comparison},
+                {"tool":"decompose_merchandise_change","arguments":args,"result":data}],
+                "claims":[{**args,"scope":SCOPE,"evidence_index":2,"metric":"volume_effect","value":"-45.00","unit":"BRL"}]}
+
+        def test_decomposition_valid(self):
+            result=self.decomposition_result()
+            self.assertEqual(check_numerical_evidence(result)["status"],"PASS")
+            self.assertEqual(check_numerical_claims(result)["status"],"PASS")
+
+        def test_decomposition_tampered_component(self):
+            result=self.decomposition_result();result["evidence"][2]["result"]["volume_effect"]="-44"
+            self.assertEqual(check_numerical_evidence(result)["status"],"FAIL")
+            self.assertEqual(check_numerical_claims(result)["status"],"FAIL")
+
+        def test_decomposition_input_disagrees_with_source(self):
+            result=self.decomposition_result()
+            result["evidence"][2]["result"]["inputs"]["baseline"]=dict(result["evidence"][2]["result"]["inputs"]["baseline"],delivered_orders=9)
+            self.assertEqual(check_numerical_evidence(result)["status"],"FAIL")
+
+        def test_decomposition_wrong_method(self):
+            result=self.decomposition_result();result["evidence"][2]["result"]["method"]="causal"
+            self.assertEqual(check_numerical_evidence(result)["status"],"FAIL")
 
         def test_citation_compatibility(self):
             result = {"answer": "Definition [docs/metric_dictionary.md | metric-05 | Late delivery]",

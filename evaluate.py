@@ -28,10 +28,11 @@ from verification import check_document_citations
 ROOT = Path(__file__).resolve().parent
 LIVE_SUITE_SOFT_LIMIT = Decimal("0.10")
 ALLOWED_TOOLS = {
-    "investigate_sql", "get_monthly_metrics", "compare_months", "get_category_changes",
+    "investigate_python", "decompose_merchandise_change", "investigate_sql", "investigate_documents", "get_monthly_metrics", "compare_months", "get_category_changes",
     "search_metric_dictionary",
 }
 QUESTIONS = {
+    "decomposition": "For November 2017 versus December 2017, split the delivered merchandise value change into order-volume and average-order-value contributions. Report both amounts and their reconciliation. Do not infer causes.",
     "definition": "How is late delivery defined?",
     "comparison": (
         "Compare November 2017 with December 2017. Report the merchandise value "
@@ -156,10 +157,28 @@ def local_documents():
     return checks
 
 
+def local_decomposition():
+    from python_specialist import decompose_merchandise_change
+    from verification import check_numerical_evidence
+    baseline = get_monthly_metrics("2017-11")
+    comparison = get_monthly_metrics("2017-12")
+    args = {"baseline_month":"2017-11", "comparison_month":"2017-12"}
+    data = decompose_merchandise_change(**args, baseline=baseline["metrics"], comparison=comparison["metrics"])
+    evidence = [
+        {"tool":"get_monthly_metrics", "arguments":{"month":"2017-11"}, "result":baseline},
+        {"tool":"get_monthly_metrics", "arguments":{"month":"2017-12"}, "result":comparison},
+        {"tool":"decompose_merchandise_change", "arguments":args, "result":data},
+    ]
+    return [check("Known volume contribution", decimal_matches(data["volume_effect"], "-237281.84")),
+            check("Known average-value contribution", decimal_matches(data["average_value_effect"], "-24450.34")),
+            check("Independent evidence arithmetic", check_numerical_evidence({"evidence":evidence})["status"] == "PASS")]
+
+
 def run_local():
     cases = []
     functions = [
         ("monthly_metrics", local_metrics),
+        ("decomposition", local_decomposition),
         ("monthly_comparison", lambda: comparison_checks(compare_months("2017-11", "2017-12"))),
         ("category_reconciliation", lambda: category_checks(get_category_changes("2017-11", "2017-12"))),
         ("date_validation", local_bad_dates),
@@ -188,6 +207,11 @@ def live_checks(name, result):
     ]
     successful = [row for row in evidence if isinstance(row.get("result"), dict)
                   and "error" not in row["result"]]
+    if name in {"definition", "unsupported_policy"}:
+        checks.append(check("Document specialist delegation completed", any(
+            row.get("specialist") == "document_specialist" and row.get("status") == "complete"
+            for row in result.get("agent_trace", [])
+        )))
     if name == "definition":
         citation = check_document_citations(result)
         checks.append(check("Retrieved document citation references valid", citation.get("status") == "PASS"))
@@ -220,6 +244,26 @@ def live_checks(name, result):
         ), kind="text_screen"))
         checks.append(check("Percentage-point wording present", bool(re.search(
             r"percentage[ -]points?", answer, re.I)), kind="text_screen"))
+    elif name == "decomposition":
+        checks.extend([
+            check("Python specialist delegation completed", any(row.get("specialist") == "python_specialist" and row.get("status") == "complete" for row in result.get("agent_trace",[]))),
+            check("Structured numerical claims verified", result.get("numerical_check",{}).get("status") == "PASS"),
+            check("Numerical evidence arithmetic verified", result.get("evidence_check",{}).get("status") == "PASS"),
+        ])
+        rows = [row for row in successful if row.get("tool") == "decompose_merchandise_change"]
+        checks.append(check("Decomposition evidence present", bool(rows)))
+        for row in rows:
+            data = row["result"]
+            checks.extend([
+                check("Correct decomposition months", data.get("baseline_month") == "2017-11" and data.get("comparison_month") == "2017-12"),
+                check("Known merchandise change", decimal_matches(data.get("change_value"), "-261732.18")),
+                check("Known volume contribution", decimal_matches(data.get("volume_effect"), "-237281.84")),
+                check("Known average-value contribution", decimal_matches(data.get("average_value_effect"), "-24450.34")),
+                check("Decomposition reconciled", data.get("reconciled") is True and decimal_matches(data.get("reconciliation_difference"), "0")),
+            ])
+        metrics = {claim.get("metric") for claim in result.get("claims",[]) if isinstance(claim,dict)}
+        checks.append(check("Both contributions have structured claims", {"volume_effect","average_value_effect"} <= metrics))
+        checks.append(check("Arithmetic interpretation acknowledged", bool(re.search(r"arithmetic|not.*caus|does not.*caus",answer,re.I)), kind="text_screen"))
     elif name == "unsupported_policy":
         searches = [row for row in evidence if row.get("tool") == "search_metric_dictionary"]
         checks.extend([
@@ -303,7 +347,7 @@ def main():
         cases, expected_cases = run_replay(args.replay)
     else:
         cases = run_live(selected) if args.live else run_local()
-        expected_cases = len(selected) if args.live else 5
+        expected_cases = len(selected) if args.live else 6
     checks = [item for case in cases for item in case["checks"]]
     failed = sum(item["status"] == "FAIL" for item in checks)
     completed = len(cases) == expected_cases
