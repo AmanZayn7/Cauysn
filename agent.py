@@ -21,6 +21,8 @@ from document_tools import search_metric_dictionary
 from sql_specialist import SQLSpecialist, SQL_TOOL
 from document_specialist import DocumentSpecialist, DOCUMENT_TOOL
 from python_specialist import PythonSpecialist, PYTHON_TOOL
+from visualization_specialist import VisualizationSpecialist, VISUALIZATION_TOOL, check_chart
+from verifier_specialist import VerifierSpecialist, ReviewRejected
 from analytics_tools import (
     compare_months,
     encode_value,
@@ -33,6 +35,7 @@ MODEL = "gemini-3.8-flash"
 THINKING_LEVEL = os.getenv("CAUSYN_THINKING_LEVEL", "medium").strip().lower()
 REQUEST_TIMEOUT_MS = 60_000
 MAX_API_REQUESTS = 7
+# Reserve one request for semantic review before any answer is released.
 # Stops BEFORE another request once reported estimated usage reaches this amount.
 # This is not a hard billing cap: an individual request may exceed it.
 SOFT_COST_LIMIT_USD = Decimal("0.10")
@@ -80,10 +83,20 @@ def build_tool(name, function):
             "required": parameters,
         },
     }
-TOOLS = [SQL_TOOL, DOCUMENT_TOOL, PYTHON_TOOL]
+TOOLS = [SQL_TOOL, DOCUMENT_TOOL, PYTHON_TOOL, VISUALIZATION_TOOL]
 RULES = """
 You are CAUSYN, an analyst of historical Olist marketplace data.
 Use the provided tools for all business numbers.
+When the user explicitly requests a chart, delegate to investigate_visualization
+with the complete question and explicit YYYY-MM months. It supports two-month
+merchandise bars and a volume/value waterfall. It fetches its own verified
+metrics and decomposition; do not additionally call SQL or Python specialists
+for that same chart. Never claim an unsupported chart was created.
+Mention the exact returned chart path and tell the user it opens in a browser.
+Chart artifacts are in render_chart leaves; their path is not a numerical claim.
+Do not invent file paths. Chart answers still need supported numerical claims
+for their stated business figures. Chart requests take priority over the
+ordinary SQL/Python routing rules below.
 For dated numerical questions, delegate to investigate_sql with the complete
 question and explicit YYYY-MM months. The SQL specialist chooses approved
 queries. Do not ask it to invent dates or run arbitrary SQL.
@@ -99,6 +112,7 @@ If a numerical investigation lacks necessary dates, ask for clarification.
 Definition questions do not require dates.
 Supported purchase months are 2017-01 through 2018-08.
 Merchandise value excludes freight and is not profit or corporate revenue.
+State this explicitly in numerical answers, together with BRL and delivered-order purchase-month scope.
 Currency is BRL. Round displayed money and percentages to two decimals.
 State explicitly that numerical reporting covers delivered orders grouped by purchase month.
 In prose say "decreased by 4.95" or "changed by -4.95", never "decreased by -4.95".
@@ -195,10 +209,15 @@ def verify_final_response(raw_text, evidence):
         raise RuntimeError("Numerical evidence was returned but the answer supplied no "
                            "checkable numerical claims. No answer displayed.")
     result = {"answer": payload["answer"], "claims": payload["claims"], "evidence": evidence}
+    chart_events = [event for event in evidence if event.get("tool") == "render_chart" and "error" not in event.get("result",{})]
+    chart_sources = [event for event in evidence if event.get("agent") == "visualization_specialist" and event.get("tool") != "render_chart"]
+    chart_checks = [check_chart(event["result"].get("specification",{}), chart_sources) for event in chart_events]
+    result["chart_check"] = {"status":"FAIL" if any(check["status"] == "FAIL" for check in chart_checks) else "PASS" if chart_checks else "NOT_CHECKED", "checks":chart_checks}
+    result["artifacts"] = list({event["result"]["path"]: {key:event["result"][key] for key in ("path","relative_path","format")} for event in chart_events}.values())
     result["citation_check"] = check_document_citations(result)
     result["numerical_check"] = check_numerical_claims(result)
     result["evidence_check"] = check_numerical_evidence(result)
-    for name in ("citation_check", "numerical_check", "evidence_check"):
+    for name in ("citation_check", "numerical_check", "evidence_check", "chart_check"):
         if result[name]["status"] == "FAIL":
             raise RuntimeError(f"Final response failed {name}. No answer displayed. "
                                "No automatic repair API call was made.")
@@ -280,7 +299,8 @@ def usage_summary(requests, started, calls_used, cache_hits):
 
 def request_interaction(client, requests, *, tool_declarations=None,
                         agent_name="orchestrator", **kwargs):
-    if len(requests) >= MAX_API_REQUESTS:
+    request_limit = MAX_API_REQUESTS if agent_name == "verifier_specialist" else MAX_API_REQUESTS - 1
+    if len(requests) >= request_limit:
         raise RuntimeError("API request limit reached. Investigation stopped.")
     known_cost = sum((Decimal(item["estimated_cost_usd"])
                       for item in requests if item["estimated_cost_usd"] is not None),
@@ -369,8 +389,9 @@ def answer_question(question):
             specialist = SQLSpecialist(client, requests, request_interaction)
             document_specialist = DocumentSpecialist(client, requests, request_interaction)
             python_specialist = PythonSpecialist(client, requests, request_interaction)
+            visualization_specialist = VisualizationSpecialist(client, requests, request_interaction)
             functions = {"investigate_sql": specialist, "investigate_documents": document_specialist,
-                         "investigate_python": python_specialist}
+                         "investigate_python": python_specialist, "investigate_visualization": visualization_specialist}
             interaction = request_interaction(
                 client, requests, input=f"{RULES}\n\nUser question:\n{question}",
             )
@@ -380,6 +401,12 @@ def answer_question(question):
                     if not interaction.output_text:
                         raise RuntimeError("The model returned no answer.")
                     verified = verify_final_response(interaction.output_text, evidence)
+                    reviewer = VerifierSpecialist(client, requests, request_interaction)
+                    review = reviewer.review(question, verified)
+                    agent_trace.append({"agent":"verifier_specialist", "action":"review_answer", "status":review["verdict"]})
+                    if review["verdict"] != "PASS":
+                        raise ReviewRejected(review)
+                    verified["ai_review"] = review
                     verified.update({
                         "question": question,
                         "tool_calls": calls_used,
@@ -418,6 +445,8 @@ def answer_question(question):
                         else:
                             if call.name == "investigate_sql":
                                 specialist.max_operations = min(3, MAX_TOOL_CALLS - calls_used)
+                            elif call.name == "investigate_visualization":
+                                visualization_specialist.max_operations = MAX_TOOL_CALLS - calls_used
                             elif call.name == "investigate_python":
                                 python_specialist.max_operations = MAX_TOOL_CALLS - calls_used
                             elif call.name == "investigate_documents":
@@ -427,9 +456,9 @@ def answer_question(question):
                                 )
                             result = function(**arguments)
                     except (ValueError, TypeError) as error:
-                        if call.name in {"investigate_sql", "investigate_documents", "investigate_python"}:
+                        if call.name in {"investigate_sql", "investigate_documents", "investigate_python", "investigate_visualization"}:
                             owner = {"investigate_sql": "sql_specialist", "investigate_documents": "document_specialist",
-                                     "investigate_python": "python_specialist"}[call.name]
+                                     "investigate_python": "python_specialist", "investigate_visualization": "visualization_specialist"}[call.name]
                             result = {"error": owner + " plan/validation failed: " + str(error)}
                             agent_trace.append({"agent": "orchestrator", "specialist": owner,
                                                 "action": "delegate", "status": "validation_failure",
@@ -447,7 +476,7 @@ def answer_question(question):
                                   "No document evidence is available."}
                     if cache_key is not None and not (isinstance(result, dict) and "error" in result):
                         cache[cache_key] = result
-                    if call.name in {"investigate_sql", "investigate_documents", "investigate_python"} and isinstance(result.get("evidence"), list):
+                    if call.name in {"investigate_sql", "investigate_documents", "investigate_python", "investigate_visualization"} and isinstance(result.get("evidence"), list):
                         leaves = []
                         for leaf in result["evidence"]:
                             event = {**leaf, "reused": reused or leaf.get("reused", False)}
@@ -504,6 +533,10 @@ if __name__ == "__main__":
         result = answer_question(question)
         print("\nANSWER")
         print(result["answer"])
+        if result.get("artifacts"):
+            print("\nCHART FILES")
+            for artifact in result["artifacts"]:
+                print(artifact["path"])
         print("\nEVIDENCE")
         print(json.dumps(
             result["evidence"], indent=2, default=encode_value
@@ -513,10 +546,16 @@ if __name__ == "__main__":
         print(json.dumps(result["agent_trace"], indent=2))
     except KeyboardInterrupt:
         raise SystemExit("Stopped by user.")
+    except ReviewRejected as error:
+        print("\nAI REVIEW — DRAFT BLOCKED")
+        print(json.dumps(error.review, indent=2))
+        raise SystemExit(str(error))
     except (ValueError, RuntimeError) as error:
         raise SystemExit(str(error))
     print("\nUSAGE")
     print(json.dumps(result["usage"], indent=2))
+    print("\nAI REVIEW")
+    print(json.dumps(result["ai_review"], indent=2))
     print("\nCITATION CHECK")
     print(json.dumps(result["citation_check"], indent=2))
     print("\nNUMERICAL CLAIM CHECK")

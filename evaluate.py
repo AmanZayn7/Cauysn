@@ -28,10 +28,12 @@ from verification import check_document_citations
 ROOT = Path(__file__).resolve().parent
 LIVE_SUITE_SOFT_LIMIT = Decimal("0.10")
 ALLOWED_TOOLS = {
-    "investigate_python", "decompose_merchandise_change", "investigate_sql", "investigate_documents", "get_monthly_metrics", "compare_months", "get_category_changes",
+    "investigate_visualization", "render_chart", "investigate_python", "decompose_merchandise_change", "investigate_sql", "investigate_documents", "get_monthly_metrics", "compare_months", "get_category_changes",
     "search_metric_dictionary",
 }
 QUESTIONS = {
+    "verifier_challenge": "Review an intentionally unsupported causal explanation with otherwise valid numerical evidence.",
+    "visualization": "Create a waterfall chart of the delivered merchandise value change from November 2017 to December 2017, splitting order-volume and average-order-value contributions. State both contributions and the total change. Give the saved chart path and do not infer causes.",
     "decomposition": "For November 2017 versus December 2017, split the delivered merchandise value change into order-volume and average-order-value contributions. Report both amounts and their reconciliation. Do not infer causes.",
     "definition": "How is late delivery defined?",
     "comparison": (
@@ -205,8 +207,19 @@ def live_checks(name, result):
         check("Only approved tools requested", all(row.get("tool") in ALLOWED_TOOLS for row in evidence)),
         check("Tool calls within limit", 0 <= result.get("tool_calls", -1) <= 6),
     ]
+    if name != "verifier_challenge":
+        checks.append(check("AI verifier approved the answer", result.get("ai_review",{}).get("verdict") == "PASS"))
+        checks.append(check("AI verifier review recorded", any(row.get("agent") == "verifier_specialist" and row.get("action") == "review_answer" and row.get("status") == "PASS" for row in result.get("agent_trace",[]))))
     successful = [row for row in evidence if isinstance(row.get("result"), dict)
                   and "error" not in row["result"]]
+    if name == "verifier_challenge":
+        review=result.get("ai_review",{})
+        checks.extend([
+            check("Numerical draft passed local checks", result.get("numerical_check",{}).get("status") == "PASS" and result.get("evidence_check",{}).get("status") == "PASS"),
+            check("Unsupported causal explanation rejected", review.get("verdict") == "FAIL"),
+            check("Explanation finding present", any(row.get("code") == "unsupported_explanation" for row in review.get("findings",[]))),
+            check("Verifier challenge made one API request", result.get("usage",{}).get("api_requests") == 1),
+        ])
     if name in {"definition", "unsupported_policy"}:
         checks.append(check("Document specialist delegation completed", any(
             row.get("specialist") == "document_specialist" and row.get("status") == "complete"
@@ -244,6 +257,26 @@ def live_checks(name, result):
         ), kind="text_screen"))
         checks.append(check("Percentage-point wording present", bool(re.search(
             r"percentage[ -]points?", answer, re.I)), kind="text_screen"))
+    elif name == "visualization":
+        checks.extend([
+            check("Visualization specialist delegation completed", any(row.get("specialist") == "visualization_specialist" and row.get("status") == "complete" for row in result.get("agent_trace",[]))),
+            check("Chart source mapping verified", result.get("chart_check",{}).get("status") == "PASS"),
+            check("Structured numerical claims verified", result.get("numerical_check",{}).get("status") == "PASS"),
+            check("Source evidence arithmetic verified", result.get("evidence_check",{}).get("status") == "PASS"),
+        ])
+        charts = [row["result"] for row in successful if row.get("tool") == "render_chart"]
+        checks.append(check("Exactly one chart created", len(charts) == 1))
+        for artifact in charts:
+            spec=artifact.get("specification",{})
+            checks.extend([
+                check("Requested waterfall type", spec.get("chart_kind") == "volume_value_waterfall"),
+                check("Correct chart months", spec.get("baseline_month") == "2017-11" and spec.get("comparison_month") == "2017-12"),
+                check("Exact waterfall values", [row.get("value") for row in spec.get("rows",[])] == ["987765.37","-237281.84","-24450.34","726033.19"]),
+                check("Saved HTML artifact reported", artifact.get("format") == "html" and str(artifact.get("path","")).endswith(".html")),
+                check("Artifact path appears in answer", bool(artifact.get("path")) and artifact["path"] in answer),
+            ])
+        metrics={claim.get("metric") for claim in result.get("claims",[]) if isinstance(claim,dict)}
+        checks.append(check("Both plotted contributions have claims", {"volume_effect","average_value_effect"} <= metrics))
     elif name == "decomposition":
         checks.extend([
             check("Python specialist delegation completed", any(row.get("specialist") == "python_specialist" and row.get("status") == "complete" for row in result.get("agent_trace",[]))),
@@ -287,6 +320,38 @@ def live_checks(name, result):
     return checks
 
 
+def run_verifier_challenge():
+    """One paid review of a deliberately bad draft; never released as an answer."""
+    import os
+    import uuid
+    from agent import (genai, request_interaction, verify_final_response, usage_summary,
+                       save_usage, MODEL, REQUEST_TIMEOUT_MS)
+    from verifier_specialist import VerifierSpecialist
+    key=os.getenv("GEMINI_API_KEY")
+    if not key:raise ValueError("GEMINI_API_KEY is missing.")
+    args={"baseline_month":"2017-11", "comparison_month":"2017-12"}
+    evidence=[{"tool":"compare_months", "arguments":args, "result":compare_months(**args)}]
+    draft_answer=("For delivered orders grouped by purchase month, merchandise value changed by -261732.18 BRL from November to December 2017. "
+                  "Merchandise excludes freight and is not profit or corporate revenue. Source: analytics.monthly_performance. "
+                  "This decline was caused by customers losing confidence in Olist.")
+    claims=[{**args,"scope":"delivered_orders_by_purchase_month","evidence_index":0,
+             "metric":"change_value","value":"-261732.18","unit":"BRL"}]
+    draft=verify_final_response(json.dumps({"answer":draft_answer,"claims":claims}),evidence)
+    requests=[];started=time.monotonic();status="failed"
+    try:
+        with genai.Client(api_key=key,http_options={"timeout":REQUEST_TIMEOUT_MS,
+             "retry_options":{"attempts":1,"initial_delay":0.5,"max_delay":1,"http_status_codes":[500,502,503,504]}}) as client:
+            review=VerifierSpecialist(client,requests,request_interaction).review("Compare November 2017 with December 2017 using the available evidence.",draft)
+        status="completed_verifier_challenge"
+        return {**draft,"answer":"An intentionally unsupported causal draft was reviewed; it is not a user-facing analytical answer.",
+                "challenge_draft":draft_answer,"ai_review":review,"tool_calls":0,
+                "agent_trace":[{"agent":"verifier_specialist","action":"review_answer","status":review["verdict"]}],
+                "usage":usage_summary(requests,started,0,0)}
+    finally:
+        save_usage({"run_id":str(uuid.uuid4()),"timestamp_utc":datetime.now(timezone.utc).isoformat(),
+                    "model":MODEL,"status":status,"usage":usage_summary(requests,started,0,0)})
+
+
 def run_live(selected):
     from agent import answer_question  # Local mode never imports/initializes the LLM client.
     cases = []
@@ -297,10 +362,13 @@ def run_live(selected):
             break
         print(f"\nLIVE: {name}", flush=True)
         try:
-            result = answer_question(QUESTIONS[name])
+            result = run_verifier_challenge() if name == "verifier_challenge" else answer_question(QUESTIONS[name])
         except Exception as error:
             cases.append({"case": name, "checks": [check("Live run completed", False,
                           type(error).__name__)], "manual_review_required": True})
+            if hasattr(error,"review"):
+                cases[-1]["ai_review"]=error.review
+                print("AI review blocked the draft:",json.dumps(error.review),flush=True)
             print("Live run failed; stopping suite to avoid repeated paid failures.")
             break
         checks = live_checks(name, result)
