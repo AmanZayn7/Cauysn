@@ -1,6 +1,7 @@
 import inspect
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -13,7 +14,9 @@ import psycopg
 from dotenv import load_dotenv
 from google import genai
 from google.genai import errors
-from verification import check_document_citations
+from verification import (
+    check_document_citations, check_numerical_claims, check_numerical_evidence,
+)
 from document_tools import search_metric_dictionary
 from analytics_tools import (
     compare_months,
@@ -23,6 +26,8 @@ from analytics_tools import (
 )
 load_dotenv(Path(__file__).parent / ".env")
 MODEL = "gemini-3.8-flash"
+# Optional experiment; the baseline remains Google's default medium setting.
+THINKING_LEVEL = os.getenv("CAUSYN_THINKING_LEVEL", "medium").strip().lower()
 REQUEST_TIMEOUT_MS = 60_000
 MAX_API_REQUESTS = 7
 # Stops BEFORE another request once reported estimated usage reaches this amount.
@@ -89,6 +94,9 @@ Definition questions do not require dates.
 Supported purchase months are 2017-01 through 2018-08.
 Merchandise value excludes freight and is not profit or corporate revenue.
 Currency is BRL. Round displayed money and percentages to two decimals.
+State explicitly that numerical reporting covers delivered orders grouped by purchase month.
+In prose say "decreased by 4.95" or "changed by -4.95", never "decreased by -4.95".
+Signed structured change claims must still retain their negative sign.
 Distinguish percentage changes from percentage-point differences.
 Explain category contributions as arithmetic, not proven causes.
 Do not invent promotions, fees, customer motives, or other explanations.
@@ -108,7 +116,76 @@ Reuse existing evidence; do not repeat identical tool calls.
 Request only tools needed to answer the question.
 Do not fetch monthly metrics again if existing results already answer it.
 Keep answers proportionate to the question, while retaining necessary evidence.
+FINAL OUTPUT CONTRACT:
+Return your final response as one JSON object with exactly "answer" and "claims".
+"answer" is a readable text string, including document citations where relevant.
+"claims" is a list of structured claims for the business figures in your answer.
+For definitions, missing dates, unsupported policies/dates or failed tools, use []
+when there are no supported business numerical claims. Do not fabricate claims.
+Each successful tool response is wrapped with its zero-based "evidence_index"
+and "result". Reference that evidence_index in each claim.
+Every claim requires evidence_index, metric, value (plain signed decimal STRING,
+no comma separators), unit, and scope="delivered_orders_by_purchase_month".
+Money/rates use two decimal places, rounding HALF_UP. Counts use exact integers.
+For compare_months, include baseline_month and comparison_month (YYYY-MM).
+Allowed metrics/units: baseline_merchandise_value:BRL,
+comparison_merchandise_value:BRL, change_value:BRL, change_pct:percent,
+order_count_change:orders, late_delivery_change_percentage_points:percentage_points.
+For get_category_changes, include baseline_month and comparison_month.
+Allowed metrics: overall_change, baseline_value, comparison_value, change_value
+(all BRL); category-specific metrics also require the exact category_label.
+For get_monthly_metrics, include purchase_month (YYYY-MM).
+Allowed metrics/units: delivered_orders:orders, delivered_merchandise_value:BRL,
+average_merchandise_value_per_order:BRL, assessable_delivery_orders:orders,
+late_orders:orders, late_delivery_pct:percent.
+Use comparison minus baseline for change claims: a decrease retains a NEGATIVE
+value even if the prose says "decreased by" a positive magnitude.
+Every business figure in the answer must have a corresponding supported claim.
+Do not add newly calculated business metrics outside the supported claim schema.
+Do not include markdown fences around the JSON object.
 """
+
+
+def verify_final_response(raw_text, evidence):
+    """Validate the final response without another model request.
+
+    Structured claims and available arithmetic are checked before display.
+    This is not a complete semantic verifier for every sentence in the prose.
+    """
+    try:
+        payload = json.loads(raw_text)
+    except (json.JSONDecodeError, TypeError):
+        raise RuntimeError("Final response was not valid structured JSON. "
+                           "No answer displayed; no repair API call was made.") from None
+    if not isinstance(payload, dict) or set(payload) != {"answer", "claims"}:
+        raise RuntimeError("Final response must contain exactly answer and claims.")
+    if not isinstance(payload["answer"], str) or not payload["answer"].strip():
+        raise RuntimeError("Final response contained no readable answer.")
+    if not isinstance(payload["claims"], list):
+        raise RuntimeError("Final numerical claims must be a list.")
+    if re.search(
+        r"\b(?:decreased|fell|dropped|declined)\s+by\s*(?:\*\*)?\s*(?:(?:BRL|R\$)\s*)?[-−]\s*\d",
+        payload["answer"], re.IGNORECASE,
+    ):
+        raise RuntimeError("Answer contains ambiguous 'decreased by a negative value' wording. "
+                           "No answer displayed; no repair API call was made.")
+    numerical_evidence = any(
+        event.get("tool") in {"get_monthly_metrics", "compare_months", "get_category_changes"}
+        and isinstance(event.get("result"), dict) and "error" not in event["result"]
+        for event in evidence
+    )
+    if numerical_evidence and not payload["claims"]:
+        raise RuntimeError("Numerical evidence was returned but the answer supplied no "
+                           "checkable numerical claims. No answer displayed.")
+    result = {"answer": payload["answer"], "claims": payload["claims"], "evidence": evidence}
+    result["citation_check"] = check_document_citations(result)
+    result["numerical_check"] = check_numerical_claims(result)
+    result["evidence_check"] = check_numerical_evidence(result)
+    for name in ("citation_check", "numerical_check", "evidence_check"):
+        if result[name]["status"] == "FAIL":
+            raise RuntimeError(f"Final response failed {name}. No answer displayed. "
+                               "No automatic repair API call was made.")
+    return result
 
 
 def token_usage(interaction):
@@ -163,6 +240,7 @@ def usage_summary(requests, started, calls_used, cache_hits):
                       if request["estimated_cost_usd"] is not None), Decimal(0))
     return {
         "api_requests": len(requests),
+        "thinking_level": THINKING_LEVEL,
         "max_sdk_retries_per_request": 1,
         "successful_api_requests": len(successful),
         "tool_calls": calls_used,
@@ -191,13 +269,17 @@ def request_interaction(client, requests, **kwargs):
                      Decimal(0))
     if known_cost >= SOFT_COST_LIMIT_USD:
         raise RuntimeError("Estimated per-question cost limit reached. Investigation stopped.")
-    print(f"\nAPI request {len(requests) + 1}/{MAX_API_REQUESTS}: waiting for Gemini...",
+    print(f"\nAPI request {len(requests) + 1}/{MAX_API_REQUESTS} "
+          f"(thinking: {THINKING_LEVEL}): waiting for Gemini...",
           flush=True)
     started = time.monotonic()
     entry = {"status": "started", "estimated_cost_usd": None}
     requests.append(entry)
     try:
-        interaction = client.interactions.create(model=MODEL, tools=TOOLS, **kwargs)
+        interaction = client.interactions.create(
+            model=MODEL, tools=TOOLS,
+            generation_config={"thinking_level": THINKING_LEVEL}, **kwargs,
+        )
     except Exception as error:
         # Interactions and older SDK resources use different exception classes.
         # Read structured status attributes without printing sensitive response bodies.
@@ -248,6 +330,8 @@ def save_usage(record):
 def answer_question(question):
     if not isinstance(question, str) or not question.strip():
         raise ValueError("Supply a nonblank question.")
+    if THINKING_LEVEL not in {"low", "medium", "high"}:
+        raise ValueError("CAUSYN_THINKING_LEVEL must be low, medium or high.")
     key = os.getenv("GEMINI_API_KEY")
     if not key:
         raise ValueError("GEMINI_API_KEY is missing from .env.")
@@ -272,15 +356,16 @@ def answer_question(question):
                 if not calls:
                     if not interaction.output_text:
                         raise RuntimeError("The model returned no answer.")
-                    status = "success"
-                    return {
+                    verified = verify_final_response(interaction.output_text, evidence)
+                    verified.update({
                         "question": question,
-                        "answer": interaction.output_text,
-                        "evidence": evidence,
                         "tool_calls": calls_used,
                         "model": MODEL,
+                        "thinking_level": THINKING_LEVEL,
                         "usage": usage_summary(requests, started, calls_used, cache_hits),
-                    }
+                    })
+                    status = "success"
+                    return verified
                 if calls_used + len(calls) > MAX_TOOL_CALLS:
                     raise RuntimeError("Tool-call limit reached. Investigation stopped.")
                 results = []
@@ -333,7 +418,8 @@ def answer_question(question):
                     results.append({
                         "type": "function_result", "name": call.name, "call_id": call.id,
                         "result": [{"type": "text", "text": json.dumps(
-                            result, default=encode_value, separators=(",", ":"))}],
+                            {"evidence_index": len(evidence) - 1, "result": result},
+                            default=encode_value, separators=(",", ":"))}],
                     })
                 interaction = request_interaction(
                     client, requests, input=results, previous_interaction_id=interaction.id,
@@ -358,7 +444,6 @@ if __name__ == "__main__":
         raise SystemExit("Supply a question in quotation marks.")
     try:
         result = answer_question(question)
-        result["citation_check"] = check_document_citations(result)
         print("\nANSWER")
         print(result["answer"])
         print("\nEVIDENCE")
@@ -374,3 +459,7 @@ if __name__ == "__main__":
     print(json.dumps(result["usage"], indent=2))
     print("\nCITATION CHECK")
     print(json.dumps(result["citation_check"], indent=2))
+    print("\nNUMERICAL CLAIM CHECK")
+    print(json.dumps(result["numerical_check"], indent=2))
+    print("\nEVIDENCE ARITHMETIC CHECK")
+    print(json.dumps(result["evidence_check"], indent=2))
