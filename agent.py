@@ -7,6 +7,7 @@ from pathlib import Path
 import psycopg
 from dotenv import load_dotenv
 from google import genai
+from verification import check_document_citations
 
 from document_tools import search_metric_dictionary
 from analytics_tools import (
@@ -129,13 +130,13 @@ def answer_question(question):
                 if not interaction.output_text:
                     raise RuntimeError("The model returned no answer.")
 
-                print("\nANSWER")
-                print(interaction.output_text)
-                print("\nEVIDENCE")
-                print(json.dumps(
-                    evidence, indent=2, default=encode_value
-                ))
-                return
+                return {
+                    "question": question,
+                    "answer": interaction.output_text,
+                    "evidence": evidence,
+                    "tool_calls": calls_used,
+                    "model": MODEL,
+                }
 
             if calls_used + len(calls) > MAX_TOOL_CALLS:
                 raise RuntimeError(
@@ -226,6 +227,20 @@ if __name__ == "__main__":
         raise SystemExit("Supply a question in quotation marks.")
 
     try:
-        answer_question(question)
+        result = answer_question(question)
+        result["citation_check"] = check_document_citations(result)
+
+        print("\nANSWER")
+        print(result["answer"])
+
+        print("\nEVIDENCE")
+        print(json.dumps(
+            result["evidence"], indent=2, default=encode_value
+        ))
+
+        print("\nTool calls:", result["tool_calls"])
     except (ValueError, RuntimeError) as error:
         raise SystemExit(str(error))
+    
+    print("\nCITATION CHECK")
+    print(json.dumps(result["citation_check"], indent=2))
