@@ -18,6 +18,7 @@ from verification import (
     check_document_citations, check_numerical_claims, check_numerical_evidence,
 )
 from document_tools import search_metric_dictionary
+from sql_specialist import SQLSpecialist, SQL_TOOL
 from analytics_tools import (
     compare_months,
     encode_value,
@@ -36,12 +37,7 @@ SOFT_COST_LIMIT_USD = Decimal("0.10")
 USAGE_LOG = Path(__file__).parent / "logs" / "api_usage.jsonl"
 MAX_TOOL_CALLS = 6
 MAX_DOCUMENT_SEARCHES = 2
-FUNCTIONS = {
-    "get_monthly_metrics": get_monthly_metrics,
-    "compare_months": compare_months,
-    "get_category_changes": get_category_changes,
-    "search_metric_dictionary": search_metric_dictionary,
-}
+FUNCTIONS = {"search_metric_dictionary": search_metric_dictionary}
 DESCRIPTIONS = {
     "get_monthly_metrics": (
         "Retrieve delivered-order metrics for one purchase month."
@@ -82,13 +78,15 @@ def build_tool(name, function):
             "required": parameters,
         },
     }
-TOOLS = [
-    build_tool(name, function)
-    for name, function in FUNCTIONS.items()
-]
+TOOLS = [SQL_TOOL, build_tool("search_metric_dictionary", search_metric_dictionary)]
 RULES = """
 You are CAUSYN, an analyst of historical Olist marketplace data.
 Use the provided tools for all business numbers.
+For dated numerical questions, delegate to investigate_sql with the complete
+question and explicit YYYY-MM months. The SQL specialist chooses approved
+queries. Do not ask it to invent dates or run arbitrary SQL.
+For missing dates, ask for clarification immediately, without calling any tool.
+For definitions and documentation questions, use search_metric_dictionary.
 If a numerical investigation lacks necessary dates, ask for clarification.
 Definition questions do not require dates.
 Supported purchase months are 2017-01 through 2018-08.
@@ -122,8 +120,10 @@ Return your final response as one JSON object with exactly "answer" and "claims"
 "claims" is a list of structured claims for the business figures in your answer.
 For definitions, missing dates, unsupported policies/dates or failed tools, use []
 when there are no supported business numerical claims. Do not fabricate claims.
-Each successful tool response is wrapped with its zero-based "evidence_index"
-and "result". Reference that evidence_index in each claim.
+Document tool responses have evidence_index and result. SQL delegation returns
+an evidence list; each leaf has evidence_index, tool, arguments and result.
+Use the leaf evidence_index in each claim, never an index into the plan.
+All evidence indices are assigned by the application.
 Every claim requires evidence_index, metric, value (plain signed decimal STRING,
 no comma separators), unit, and scope="delivered_orders_by_purchase_month".
 Money/rates use two decimal places, rounding HALF_UP. Counts use exact integers.
@@ -261,7 +261,8 @@ def usage_summary(requests, started, calls_used, cache_hits):
     }
 
 
-def request_interaction(client, requests, **kwargs):
+def request_interaction(client, requests, *, tool_declarations=None,
+                        agent_name="orchestrator", **kwargs):
     if len(requests) >= MAX_API_REQUESTS:
         raise RuntimeError("API request limit reached. Investigation stopped.")
     known_cost = sum((Decimal(item["estimated_cost_usd"])
@@ -273,11 +274,11 @@ def request_interaction(client, requests, **kwargs):
           f"(thinking: {THINKING_LEVEL}): waiting for Gemini...",
           flush=True)
     started = time.monotonic()
-    entry = {"status": "started", "estimated_cost_usd": None}
+    entry = {"status": "started", "agent": agent_name, "estimated_cost_usd": None}
     requests.append(entry)
     try:
         interaction = client.interactions.create(
-            model=MODEL, tools=TOOLS,
+            model=MODEL, tools=TOOLS if tool_declarations is None else tool_declarations,
             generation_config={"thinking_level": THINKING_LEVEL}, **kwargs,
         )
     except Exception as error:
@@ -335,7 +336,7 @@ def answer_question(question):
     key = os.getenv("GEMINI_API_KEY")
     if not key:
         raise ValueError("GEMINI_API_KEY is missing from .env.")
-    evidence, requests, cache = [], [], {}
+    evidence, requests, cache, agent_trace = [], [], {}, []
     calls_used = document_searches_used = cache_hits = 0
     started = time.monotonic()
     status = "failed"
@@ -348,6 +349,8 @@ def answer_question(question):
             "retry_options": {"attempts": 1, "initial_delay": 0.5, "max_delay": 1,
                               "http_status_codes": [500, 502, 503, 504]},
         }) as client:
+            specialist = SQLSpecialist(client, requests, request_interaction)
+            functions = {**FUNCTIONS, "investigate_sql": specialist}
             interaction = request_interaction(
                 client, requests, input=f"{RULES}\n\nUser question:\n{question}",
             )
@@ -361,6 +364,7 @@ def answer_question(question):
                         "question": question,
                         "tool_calls": calls_used,
                         "model": MODEL,
+                        "agent_trace": agent_trace,
                         "thinking_level": THINKING_LEVEL,
                         "usage": usage_summary(requests, started, calls_used, cache_hits),
                     })
@@ -377,11 +381,11 @@ def answer_question(question):
                     reused = False
                     cache_key = None
                     try:
-                        if call.name not in FUNCTIONS:
+                        if call.name not in functions:
                             raise ValueError("Requested tool is not allowed.")
                         if not isinstance(arguments, dict):
                             raise ValueError("Tool arguments must be an object.")
-                        function = FUNCTIONS[call.name]
+                        function = functions[call.name]
                         inspect.signature(function).bind(**arguments)
                         if not all(isinstance(value, str) and value.strip()
                                    for value in arguments.values()):
@@ -399,9 +403,17 @@ def answer_question(question):
                                 document_searches_used += 1
                                 result = function(**arguments)
                         else:
+                            if call.name == "investigate_sql":
+                                specialist.max_operations = min(3, MAX_TOOL_CALLS - calls_used)
                             result = function(**arguments)
-                    except (ValueError, TypeError):
-                        result = {"error": "Tool validation or execution failed. Check arguments "
+                    except (ValueError, TypeError) as error:
+                        if call.name == "investigate_sql":
+                            result = {"error": "SQL specialist plan/validation failed: " + str(error)}
+                            agent_trace.append({"agent": "orchestrator", "specialist": "sql_specialist",
+                                                "action": "delegate_sql", "status": "validation_failure",
+                                                "error": str(error)})
+                        else:
+                            result = {"error": "Tool validation or execution failed. Check arguments "
                                   "and data validation. Months must be YYYY-MM within 2017-01 "
                                   "through 2018-08; searches need a nonblank question. "
                                   "No verified result is available from this call."}
@@ -413,12 +425,31 @@ def answer_question(question):
                                   "No document evidence is available."}
                     if cache_key is not None and not (isinstance(result, dict) and "error" in result):
                         cache[cache_key] = result
-                    evidence.append({"tool": call.name, "arguments": arguments,
-                                     "result": result, "reused": reused})
+                    if call.name == "investigate_sql" and isinstance(result.get("evidence"), list):
+                        leaves = []
+                        for leaf in result["evidence"]:
+                            event = {**leaf, "reused": reused or leaf.get("reused", False)}
+                            evidence.append(event)
+                            leaves.append({"evidence_index": len(evidence) - 1,
+                                           "tool": event["tool"], "arguments": event["arguments"],
+                                           "result": event["result"]})
+                        if not reused:
+                            calls_used += result.get("operations_executed", 0)
+                        agent_trace.append({"agent": "orchestrator", "action": "delegate_sql",
+                                            "specialist": "sql_specialist", "status": result["status"],
+                                            "plan": result["plan"], "reused": reused})
+                        payload_for_model = {"specialist": "sql_specialist", "status": result["status"],
+                                             "evidence": leaves}
+                        if "error" in result:
+                            payload_for_model["error"] = result["error"]
+                    else:
+                        evidence.append({"tool": call.name, "arguments": arguments,
+                                         "result": result, "reused": reused})
+                        payload_for_model = {"evidence_index": len(evidence) - 1, "result": result}
                     results.append({
                         "type": "function_result", "name": call.name, "call_id": call.id,
                         "result": [{"type": "text", "text": json.dumps(
-                            {"evidence_index": len(evidence) - 1, "result": result},
+                            payload_for_model,
                             default=encode_value, separators=(",", ":"))}],
                     })
                 interaction = request_interaction(
@@ -450,7 +481,9 @@ if __name__ == "__main__":
         print(json.dumps(
             result["evidence"], indent=2, default=encode_value
         ))
-        print("\nTool calls:", result["tool_calls"])
+        print("\nTool calls (including delegated SQL operations):", result["tool_calls"])
+        print("\nAGENT TRACE")
+        print(json.dumps(result["agent_trace"], indent=2))
     except KeyboardInterrupt:
         raise SystemExit("Stopped by user.")
     except (ValueError, RuntimeError) as error:

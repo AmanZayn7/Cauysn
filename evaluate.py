@@ -28,7 +28,7 @@ from verification import check_document_citations
 ROOT = Path(__file__).resolve().parent
 LIVE_SUITE_SOFT_LIMIT = Decimal("0.10")
 ALLOWED_TOOLS = {
-    "get_monthly_metrics", "compare_months", "get_category_changes",
+    "investigate_sql", "get_monthly_metrics", "compare_months", "get_category_changes",
     "search_metric_dictionary",
 }
 QUESTIONS = {
@@ -195,6 +195,14 @@ def live_checks(name, result):
             r"actual.*delivery.*(?:later|after).*estimated", answer, re.I | re.S)),
             kind="text_screen"))
     elif name == "comparison":
+        checks.extend([
+            check("SQL specialist delegation completed", any(
+                row.get("specialist") == "sql_specialist" and row.get("status") == "complete"
+                for row in result.get("agent_trace", [])
+            )),
+            check("Structured numerical claims verified", result.get("numerical_check", {}).get("status") == "PASS"),
+            check("Numerical evidence arithmetic verified", result.get("evidence_check", {}).get("status") == "PASS"),
+        ])
         for tool, validate in (("compare_months", comparison_checks),
                                ("get_category_changes", category_checks)):
             rows = [row for row in successful if row.get("tool") == tool]
@@ -265,26 +273,47 @@ def run_live(selected):
     return cases
 
 
+def run_replay(path):
+    """Recheck saved output using current checks; never call the agent/API."""
+    original = json.loads(path.read_text(encoding="utf-8"))
+    cases = []
+    for case in original["cases"]:
+        result = case.get("result")
+        if not isinstance(result, dict):
+            checks = [check("Saved live run completed", False)]
+        elif case["case"] not in QUESTIONS:
+            checks = [check("Recognized evaluation case", False)]
+        else:
+            checks = live_checks(case["case"], result)
+        cases.append({**case, "checks": checks, "manual_review_required": True})
+    return cases, original.get("expected_cases", len(cases))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--live", action="store_true", help="Call Gemini; consumes API credit.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--live", action="store_true", help="Call Gemini; consumes API credit.")
+    mode.add_argument("--replay", type=Path, help="Recheck a saved report; no API calls.")
     parser.add_argument("--case", choices=list(QUESTIONS), help="Run one live case only.")
     args = parser.parse_args()
     if args.case and not args.live:
         parser.error("--case requires --live")
     selected = [args.case] if args.case else list(QUESTIONS)
-    cases = run_live(selected) if args.live else run_local()
+    if args.replay:
+        cases, expected_cases = run_replay(args.replay)
+    else:
+        cases = run_live(selected) if args.live else run_local()
+        expected_cases = len(selected) if args.live else 5
     checks = [item for case in cases for item in case["checks"]]
     failed = sum(item["status"] == "FAIL" for item in checks)
-    expected_cases = len(selected) if args.live else 5
     completed = len(cases) == expected_cases
     report = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "mode": "live" if args.live else "local",
+        "mode": "replay" if args.replay else "live" if args.live else "local",
         "expected_cases": expected_cases, "completed_cases": len(cases),
         "passed_checks": len(checks) - failed, "failed_checks": failed,
         "automated_status": "PASS" if completed and not failed else "FAIL",
-        "manual_review_required": args.live,
+        "manual_review_required": bool(args.live or args.replay),
         "limitations": (
             "This is a small regression suite, not an overall accuracy score. "
             "Live text screens check wording/number presence, not complete claim support. "
@@ -301,8 +330,10 @@ def main():
         for item in case["checks"]:
             print(f'{item["status"]}: {case["case"]} — {item["name"]}')
     print(f'\n{report["automated_status"]}: {report["passed_checks"]} passed; {failed} failed.')
-    if args.live:
+    if args.live or args.replay:
         print("Manual answer review still required; automated PASS is not proof of full correctness.")
+        if args.replay:
+            print("Replay used saved results; no Gemini API requests made.")
     else:
         print("Local mode made no Gemini API requests.")
     print(f"Report saved: {filename}")
