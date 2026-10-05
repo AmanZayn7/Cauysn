@@ -1,0 +1,10 @@
+*
+!Dockerfile
+!requirements.runtime.txt
+!*.py
+!docs/
+!docs/metric_dictionary.md
+!ui/
+!ui/index.html
+!ui/app.js
+!ui/style.css

@@ -1,0 +1,25 @@
+# Local Docker preview. No database or Gemini access needed.
+services:
+  causyn:
+    build: .
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      CAUSYN_ENV: local
+      CAUSYN_LIVE_ENABLED: "false"
+      CAUSYN_PUBLIC_ORIGIN: http://127.0.0.1:8765
+    volumes:
+      - causyn_runtime:/runtime
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 768m
+    cpus: 1.0
+    init: true
+    restart: unless-stopped
+volumes:
+  causyn_runtime:

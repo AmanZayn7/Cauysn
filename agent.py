@@ -11,6 +11,7 @@ from decimal import Decimal
 
 import httpx
 from pathlib import Path
+from deployment_config import runtime_path
 import psycopg
 from dotenv import load_dotenv
 from google import genai
@@ -40,7 +41,7 @@ MAX_API_REQUESTS = 7
 # Stops BEFORE another request once reported estimated usage reaches this amount.
 # This is not a hard billing cap: an individual request may exceed it.
 SOFT_COST_LIMIT_USD = Decimal("0.10")
-USAGE_LOG = Path(__file__).parent / "logs" / "api_usage.jsonl"
+USAGE_LOG = runtime_path("logs", "api_usage.jsonl")
 MAX_TOOL_CALLS = 6
 MAX_DOCUMENT_SEARCHES = 2
 FUNCTIONS = {"search_metric_dictionary": search_metric_dictionary}

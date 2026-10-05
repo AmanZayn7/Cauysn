@@ -13,7 +13,8 @@ from pathlib import Path
 from python_specialist import validate_plan as validate_months, decompose_merchandise_change
 from verification import _number, check_numerical_evidence
 
-CHART_DIRECTORY = Path(__file__).parent / 'reports' / 'charts'
+from deployment_config import runtime_path
+CHART_DIRECTORY = runtime_path('reports', 'charts')
 VISUALIZATION_TOOL = {
     'type':'function', 'name':'investigate_visualization',
     'description':'Create verified charts: monthly merchandise trends, category/seller merchandise ranking bars, state late-rate bars, two-month comparison bars or volume/value waterfall. Supply complete question and YYYY-MM months or inclusive month range. Only verified results are plotted.',
@@ -156,7 +157,7 @@ def save_chart(spec, evidence, directory=None):
     *{{box-sizing:border-box}}body{{margin:0;background:#f3f6fb;color:#17243b;font:16px system-ui,-apple-system,sans-serif}}main{{max-width:1220px;margin:48px auto;padding:0 28px}}.brand{{font-size:13px;letter-spacing:.18em;color:#3456d1;font-weight:750}}h1{{font-size:32px;letter-spacing:-.035em;margin:14px 0 10px}}.sub{{color:#63738a;margin-bottom:28px}}.card{{background:white;border:1px solid #e4eaf4;border-radius:20px;padding:24px;box-shadow:0 10px 35px #192d5710}}.plot{{overflow-x:auto}}svg{{display:block;width:100%;min-width:700px;height:auto}}.bar:hover rect,.bar:focus rect{{filter:brightness(1.13)}}.note{{line-height:1.6;color:#566680;font-size:14px}}.badge{{display:inline-block;background:#e8f5f0;color:#16735b;padding:6px 11px;border-radius:20px;font-size:12px}}details{{margin-top:24px}}summary{{cursor:pointer;font-weight:600}}table{{border-collapse:collapse;width:100%;margin-top:16px}}th,td{{text-align:left;padding:12px;border-bottom:1px solid #e7edf5}}th:last-child,td:last-child{{text-align:right}}pre{{overflow:auto;background:#f7f9fc;padding:18px;font-size:12px}}@media(max-width:600px){{main{{margin:24px auto;padding:0 14px}}h1{{font-size:26px}}.card{{padding:16px}}}}
     </style><main><div class="brand">CAUSYN / EVIDENCE TO INSIGHT</div><h1>{html.escape(spec['title'])}</h1><p class="sub">{first} → {last} · Delivered orders grouped by purchase month</p><section class="card"><span class="badge">Verified chart values</span><div class="plot">{svg}</div><p class="note">Merchandise value excludes freight and is not profit or corporate revenue. Source: {html.escape(spec['source'])}.</p><p class="note">{html.escape(spec['interpretation'])}</p><details open><summary>Exact plotted values · {html.escape(spec["unit"])}</summary><table><thead><tr><th>Measure</th><th>{html.escape(spec["unit"])}</th></tr></thead><tbody>{table}</tbody></table></details><details><summary>Chart specification</summary><pre>{html.escape(json.dumps(spec,indent=2))}</pre></details></section></main></html>'''
     path.write_text(content,encoding='utf-8')
-    return {'path':str(path.resolve()),'relative_path':str(path.relative_to(Path(__file__).parent)) if directory==CHART_DIRECTORY else name,
+    return {'path':str(path.resolve()),'relative_path':'reports/charts/' + name if directory==CHART_DIRECTORY else name,
             'format':'html','specification':spec,'chart_check':verification,
             'note':'Open this local HTML file in a browser. It needs no network or new Python package.'}
 

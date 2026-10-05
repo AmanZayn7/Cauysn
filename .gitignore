@@ -6,3 +6,10 @@ __pycache__/
 !.env.example
 data/raw/
 .DS_Store
+# Deployment/private runtime artifacts
+runtime/
+logs/
+*.dump
+*.backup
+*.sqlite3
+*.sqlite3-*

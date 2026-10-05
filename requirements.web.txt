@@ -1,0 +1,3 @@
+# New web dependencies, tested together. Existing agent dependencies are unchanged.
+starlette==1.7.0
+uvicorn==0.54.0

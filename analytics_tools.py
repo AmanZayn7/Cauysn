@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import psycopg
 from psycopg.rows import dict_row
+from deployment_config import database_options
 
 
 def validate_month(month: str) -> date:
@@ -24,10 +25,7 @@ def validate_month(month: str) -> date:
 
 def connect_database():
     return psycopg.connect(
-        host="localhost",
-        port=5432,
-        dbname="causyn",
-        user="causyn_reader",
+        **database_options(),
         row_factory=dict_row,
     )
 
@@ -170,7 +168,7 @@ def get_category_changes(
 
 def encode_value(value):
     if isinstance(value, Decimal):
-        return str(value)
+        return format(value, "f")
     if isinstance(value, date):
         return value.isoformat()
     raise TypeError(f"Cannot encode {type(value).__name__}")
