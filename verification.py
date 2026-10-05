@@ -4,6 +4,7 @@ Numerical claims must explicitly identify their evidence, metric, units and
 purchase-month scope. These checks do not parse or verify free-text prose.
 """
 
+from depth_contracts import TOOLS as DEPTH_TOOLS, validate_result as validate_depth_result
 import re
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 
@@ -87,6 +88,7 @@ METRIC_UNITS = {
         "change_value": "BRL",
     },
 }
+METRIC_UNITS.update({name: metrics for name, (_, metrics) in DEPTH_TOOLS.items()})
 SCOPE = "delivered_orders_by_purchase_month"
 
 
@@ -107,7 +109,7 @@ def _number(value):
 
 def _same_displayed_number(actual, expected, unit):
     actual, expected = _number(actual), _number(expected)
-    if unit == "orders":
+    if unit in ("orders", "items"):
         return actual == actual.to_integral_value() and actual == expected
     return actual == expected.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
@@ -146,7 +148,16 @@ def _claim_expected(result, claim):
     if claim.get("scope") != SCOPE:
         raise ValueError("Claim must identify delivered orders by purchase month.")
     arguments = event.get("arguments", {})
-    if tool == "get_monthly_metrics":
+    if tool in DEPTH_TOOLS:
+        validate_depth_result(tool,data,arguments)
+        for field in ('start_month','end_month'):
+            if claim.get(field)!=arguments[field]: raise ValueError('Claim range mismatch.')
+        key=DEPTH_TOOLS[tool][0]
+        label=claim.get(key)
+        matches=[r for r in data['rows'] if r[key]==label]
+        if not isinstance(label,str) or len(matches)!=1: raise ValueError('Claim group mismatch.')
+        row=matches[0]
+    elif tool == "get_monthly_metrics":
         row = data.get("metrics", {})
         evidence_month = _month(row.get("purchase_month"))
         if claim.get("purchase_month") != evidence_month or arguments.get("month") != evidence_month:
@@ -225,7 +236,10 @@ def check_numerical_evidence(result: dict) -> dict:
             continue  # Failed calls contain no arithmetic to verify.
         try:
             _, data = _event(result, index)
-            if tool == "decompose_merchandise_change":
+            if tool in DEPTH_TOOLS:
+                validate_depth_result(tool,data,event.get('arguments',{}))
+                record(index, 'Range, group identities, denominators and reference reconciliation', True)
+            elif tool == "decompose_merchandise_change":
                 inputs = data["inputs"]
                 n0, n1 = (_number(inputs[key]["delivered_orders"]) for key in ("baseline", "comparison"))
                 v0, v1 = (_number(inputs[key]["delivered_merchandise_value"]) for key in ("baseline", "comparison"))

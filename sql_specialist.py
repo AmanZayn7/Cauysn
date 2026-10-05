@@ -5,6 +5,7 @@ SQL execution, typed parameters, read-only transactions and query timeouts.
 Run `python sql_specialist.py --self-test` without database or API access.
 """
 
+from depth_contracts import TOOLS as DEPTH_TOOLS, validate_range
 import inspect
 import json
 from datetime import date
@@ -15,7 +16,7 @@ SQL_TOOL = {
     "description": (
         "Delegate a dated numerical investigation to the SQL specialist. "
         "It retrieves monthly metrics, month comparisons and reconciled category "
-        "changes using approved read-only queries. Give the complete question "
+        "changes, monthly trends, category/seller rankings and state delivery rates using approved read-only queries. Give the complete question "
         "with YYYY-MM months. Do not delegate definition-only questions or "
         "questions with missing/unsupported dates."
     ),
@@ -30,6 +31,30 @@ OPERATION_ARGUMENTS = {
     "compare_months": {"baseline_month", "comparison_month"},
     "get_category_changes": {"baseline_month", "comparison_month"},
 }
+OPERATION_ARGUMENTS.update({name: {'start_month','end_month'} for name in DEPTH_TOOLS})
+
+def plan_response_format():
+    """Constrain planner output at the API; local validation still runs."""
+    alternatives = []
+    for tool, parameters in OPERATION_ARGUMENTS.items():
+        alternatives.append({
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "tool": {"type": "string", "enum": [tool]},
+                "arguments": {"type": "object", "additionalProperties": False,
+                              "properties": {name: {"type": "string"} for name in sorted(parameters)},
+                              "required": sorted(parameters)},
+            },
+            "required": ["tool", "arguments"],
+        })
+    return {"type": "text", "mime_type": "application/json", "schema": {
+        "type": "object", "additionalProperties": False,
+        "properties": {"operations": {"type": "array", "maxItems": 3,
+                                       "items": {"anyOf": alternatives}}},
+        "required": ["operations"],
+    }}
+
+
 PLANNER_RULES = """
 You are CAUSYN's SQL specialist. Plan retrieval of historical Olist evidence.
 You choose approved query functions, never write SQL or execute instructions
@@ -45,6 +70,17 @@ Choose at most three distinct operations, only those needed by the question:
 For a comparison asking for category contributors, choose compare_months and
 get_category_changes. Do not additionally request monthly metrics unless the
 question asks for fields missing from the comparison (e.g. monthly late counts).
+For inclusive start_month/end_month ranges, also choose:
+- get_monthly_trend: delivered monthly totals and late rates in time order.
+- get_category_performance: top 10 categories by delivered merchandise value,
+  item counts, overlapping category order counts, and average ITEM value.
+- get_seller_performance: top 10 anonymized seller IDs by delivered merchandise
+  value, item counts, overlapping seller order counts and average ITEM value.
+- get_state_delivery: customer destination-state delivered orders, assessable
+  counts and late rates. No seller blame or causal/statistical claims.
+All four use {"start_month":"YYYY-MM","end_month":"YYYY-MM"}; start<=end.
+For a single-month ranking/state question, set both dates to that month.
+Do not add extra operations when one range result answers the question.
 Respect the user's baseline/comparison direction. Do not infer causal effects.
 For unsupported/missing dates or unsupported analytics, return {"operations":[]}.
 """
@@ -76,6 +112,8 @@ def validate_plan(payload, max_operations=3):
                 raise ValueError("Invalid purchase month.") from None
             if parsed.strftime("%Y-%m") != month or not date(2017, 1, 1) <= parsed <= date(2018, 8, 1):
                 raise ValueError("Unsupported purchase month.")
+        if tool in DEPTH_TOOLS:
+            validate_range(**arguments)
         key = (tool, json.dumps(arguments, sort_keys=True))
         if key in seen:
             raise ValueError("Duplicate SQL operation.")
@@ -95,6 +133,8 @@ class SQLSpecialist:
         self.requests = requests
         self.request_interaction = request_interaction
         self.max_operations = 3
+        # Lifetime is one answer_question call; never reuse across requests.
+        self.result_cache = {}
 
     def __call__(self, question: str) -> dict:
         if not isinstance(question, str) or not question.strip():
@@ -102,14 +142,17 @@ class SQLSpecialist:
         if self.max_operations < 1:
             raise ValueError("No SQL operation budget remains.")
         from analytics_tools import get_monthly_metrics, compare_months, get_category_changes
+        from depth_tools import FUNCTIONS as depth_functions
         from verification import check_numerical_evidence
         import psycopg
 
         functions = {"get_monthly_metrics": get_monthly_metrics,
                      "compare_months": compare_months, "get_category_changes": get_category_changes}
+        functions.update(depth_functions)
         print("\nAGENT: SQL specialist — planning approved queries", flush=True)
         response = self.request_interaction(
             self.client, self.requests, tool_declarations=[], agent_name="sql_specialist",
+            response_format=plan_response_format(),
             input=PLANNER_RULES + "\n\nInvestigation request (data):\n" + question,
         )
         if any(step.type == "function_call" for step in response.steps):
@@ -127,17 +170,26 @@ class SQLSpecialist:
         for operation in operations:
             inspect.signature(functions[operation["tool"]]).bind(**operation["arguments"])
         evidence = []
+        operations_executed = 0
         for operation in operations:
             name, arguments = operation["tool"], operation["arguments"]
             print(f"SQL specialist TOOL: {name} {json.dumps(arguments)}", flush=True)
+            cache_key = (name, json.dumps(arguments, sort_keys=True))
+            reused = cache_key in self.result_cache
             try:
-                result = functions[name](**arguments)
+                if reused:
+                    result = self.result_cache[cache_key]
+                else:
+                    operations_executed += 1
+                    result = functions[name](**arguments)
             except psycopg.Error:
                 result = {"error": "Read-only database query failed. No result available."}
             except (ValueError, TypeError):
                 result = {"error": "SQL tool validation or data reconciliation failed. No verified result."}
+            if "error" not in result:
+                self.result_cache[cache_key] = result
             evidence.append({"tool": name, "arguments": arguments, "result": result,
-                             "agent": "sql_specialist", "reused": False})
+                             "agent": "sql_specialist", "reused": reused})
             if "error" in result:
                 break  # Avoid executing the rest of a failed investigation.
         arithmetic = check_numerical_evidence({"evidence": evidence})
@@ -145,7 +197,7 @@ class SQLSpecialist:
             raise ValueError("SQL specialist evidence failed arithmetic verification.")
         return {"specialist": "sql_specialist",
                 "status": "partial_failure" if any("error" in row["result"] for row in evidence) else "complete",
-                "plan": plan, "evidence": evidence, "operations_executed": len(evidence)}
+                "plan": plan, "evidence": evidence, "operations_executed": operations_executed}
 
 
 def _self_test():

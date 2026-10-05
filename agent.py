@@ -1,3 +1,4 @@
+from depth_contracts import TOOLS as DEPTH_TOOLS
 import inspect
 import json
 import os
@@ -89,7 +90,8 @@ You are CAUSYN, an analyst of historical Olist marketplace data.
 Use the provided tools for all business numbers.
 When the user explicitly requests a chart, delegate to investigate_visualization
 with the complete question and explicit YYYY-MM months. It supports two-month
-merchandise bars and a volume/value waterfall. It fetches its own verified
+merchandise bars, a volume/value waterfall, monthly merchandise trends,
+category/seller merchandise rankings, and customer-state late-rate bars. It fetches its own verified
 metrics and decomposition; do not additionally call SQL or Python specialists
 for that same chart. Never claim an unsupported chart was created.
 Mention the exact returned chart path and tell the user it opens in a browser.
@@ -169,6 +171,21 @@ For get_monthly_metrics, include purchase_month (YYYY-MM).
 Allowed metrics/units: delivered_orders:orders, delivered_merchandise_value:BRL,
 average_merchandise_value_per_order:BRL, assessable_delivery_orders:orders,
 late_orders:orders, late_delivery_pct:percent.
+For get_monthly_trend, get_category_performance, get_seller_performance and
+get_state_delivery claims, include start_month and end_month (inclusive YYYY-MM).
+Each claim must identify exactly one row using the exact purchase_month,
+category_label, seller_id or customer_state, respectively. Use the numeric
+metric keys returned in that row; counts have unit orders or items, monetary
+values BRL, and late_delivery_pct percent. No claim may point to a summary,
+reference or omitted ranking row. Do not calculate extra metrics. State that
+rankings are by delivered merchandise value, not profit. Average item value is
+not average order value. Category/seller order counts overlap and cannot be
+added. Seller IDs are anonymized. State means customer destination, not seller
+location. Small delivery samples do not justify operational or causal claims.
+For range tools provide explicit start/end months; a single-month ranking uses
+the same month twice. Trend charts plot merchandise value; state-delivery charts
+plot late percentages only for states with at least 30 assessable orders and
+must disclose this sample threshold. Evidence retains all states.
 Use comparison minus baseline for change claims: a decrease retains a NEGATIVE
 value even if the prose says "decreased by" a positive magnitude.
 Every business figure in the answer must have a corresponding supported claim.
@@ -201,7 +218,7 @@ def verify_final_response(raw_text, evidence):
         raise RuntimeError("Answer contains ambiguous 'decreased by a negative value' wording. "
                            "No answer displayed; no repair API call was made.")
     numerical_evidence = any(
-        event.get("tool") in {"get_monthly_metrics", "compare_months", "get_category_changes", "decompose_merchandise_change"}
+        event.get("tool") in ({"get_monthly_metrics", "compare_months", "get_category_changes", "decompose_merchandise_change"} | set(DEPTH_TOOLS))
         and isinstance(event.get("result"), dict) and "error" not in event["result"]
         for event in evidence
     )

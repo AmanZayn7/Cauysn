@@ -34,6 +34,12 @@ Review these points:
   causes. Do not allow claims of campaigns, fees, motives, price changes or other
   causal mechanisms unless the evidence actually supports them. A change in
   average order value alone does not prove a change in item prices.
+- Category/seller rankings are by delivered merchandise value, not profitability.
+  Group order counts overlap; average item value is not average order value.
+  Sellers are anonymized IDs. State rates concern customer destination states,
+  not seller locations; small samples cannot establish performance differences.
+  State charts apply a minimum of 30 assessable orders, disclosed in chart notes.
+  Verify each range claim's group identifier and inclusive start/end months.
 - Document citations must support the nearby statement, not merely refer to a
   retrieved section. No refund policy/deadline can be inferred from metric rules.
 - Failed tools give no numerical evidence. Missing dates should prompt a question.

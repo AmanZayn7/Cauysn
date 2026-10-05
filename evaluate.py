@@ -25,12 +25,15 @@ from document_tools import search_metric_dictionary
 from verification import check_document_citations
 
 
+from depth_contracts import TOOLS as DEPTH_TOOLS
+
 ROOT = Path(__file__).resolve().parent
 LIVE_SUITE_SOFT_LIMIT = Decimal("0.10")
 ALLOWED_TOOLS = {
     "investigate_visualization", "render_chart", "investigate_python", "decompose_merchandise_change", "investigate_sql", "investigate_documents", "get_monthly_metrics", "compare_months", "get_category_changes",
     "search_metric_dictionary",
 }
+ALLOWED_TOOLS.update(DEPTH_TOOLS)
 QUESTIONS = {
     "verifier_challenge": "Review an intentionally unsupported causal explanation with otherwise valid numerical evidence.",
     "visualization": "Create a waterfall chart of the delivered merchandise value change from November 2017 to December 2017, splitting order-volume and average-order-value contributions. State both contributions and the total change. Give the saved chart path and do not infer causes.",
