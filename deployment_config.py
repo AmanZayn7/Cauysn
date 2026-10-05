@@ -33,7 +33,7 @@ class WebSettings:
         self.production = os.getenv('CAUSYN_ENV', 'local') == 'production'
         self.port = int(os.getenv('PORT', '8765'))
         self.bind = os.getenv('CAUSYN_BIND', '0.0.0.0' if self.production else '127.0.0.1')
-        origin = os.getenv('CAUSYN_PUBLIC_ORIGIN', f'http://127.0.0.1:{self.port}').rstrip('/')
+        origin = os.getenv('CAUSYN_PUBLIC_ORIGIN', os.getenv('RENDER_EXTERNAL_URL', f'http://127.0.0.1:{self.port}')).rstrip('/')
         parsed = urlsplit(origin)
         if (parsed.scheme not in ('http', 'https') or not parsed.netloc or
                 parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path):
@@ -45,6 +45,8 @@ class WebSettings:
             self.origins.update({f'http://localhost:{self.port}', f'http://127.0.0.1:{self.port}'})
             self.hosts.update({f'localhost:{self.port}', f'127.0.0.1:{self.port}'})
         self.live = os.getenv('CAUSYN_LIVE_ENABLED', 'true' if not self.production else 'false').lower() == 'true'
+        if self.production and self.live and os.getenv('CAUSYN_REQUIRE_DURABLE_STATE','false')=='true' and not os.getenv('CAUSYN_STATE_DATABASE_URL'):
+            raise ValueError('This free deployment requires CAUSYN_STATE_DATABASE_URL before enabling Live.')
         self.access_code = os.getenv('CAUSYN_ACCESS_CODE', '')
         self.auth_required = self.production or bool(self.access_code)
         self.daily_limit = int(os.getenv('CAUSYN_DAILY_LIVE_LIMIT', '20'))

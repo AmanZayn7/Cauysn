@@ -17,7 +17,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from deployment_config import WebSettings, runtime_path
-from web_access import AccessStore
+from web_access import create_access_store
 
 ROOT=Path(__file__).resolve().parent
 UI=ROOT/'ui'
@@ -85,7 +85,7 @@ def worker():
         emit({'type':'error','message':message,'review':review})
 
 
-def run_job(job_id,request):
+def run_job(job_id,request,access=None):
     process=None
     try:
         if request['mode']=='demo':
@@ -105,7 +105,14 @@ def run_job(job_id,request):
                     job=JOBS[job_id]
                     if event.get('type')=='progress':
                         job['events'].append(event)
-                    elif event.get('type')=='result':job.update(status='complete',result=event['result'])
+                    elif event.get('type')=='result':
+                        if hasattr(access, 'save_chart'):
+                            directory=runtime_path('reports','charts').resolve()
+                            for artifact in event['result'].get('artifacts',[]):
+                                path=Path(artifact['path']).resolve()
+                                if path.parent != directory:raise ValueError('Invalid chart path.')
+                                access.save_chart(JOB_OWNERS[job_id],path.name,path.read_text(encoding='utf-8'))
+                        job.update(status='complete',result=event['result'])
                     elif event.get('type')=='error':job.update(status='error',message=event['message'],review=event.get('review'))
             process.wait()
         finally:timeout.cancel()
@@ -114,7 +121,7 @@ def run_job(job_id,request):
                 JOBS[job_id].update(status='error',message='The investigation stopped before returning an answer. It has not been retried automatically.')
     except Exception:
         if process and process.poll() is None:process.kill()
-        with LOCK:JOBS[job_id].update(status='error',message='The analysis process could not start.')
+        with LOCK:JOBS[job_id].update(status='error',message='The investigation could not finish or save its chart. No automatic retry was made.')
     finally:
         with LOCK:PROCESSES.pop(job_id,None)
 
@@ -127,7 +134,7 @@ def create_app(settings=None, access=None):
     from starlette.routing import Route
 
     settings = settings or WebSettings()
-    access = access or AccessStore(runtime_path('state', 'web_access.sqlite3'))
+    access = access or create_access_store(runtime_path('state', 'web_access.sqlite3'))
 
     def reply(status, message):
         return JSONResponse({'message': message}, status_code=status)
@@ -245,7 +252,7 @@ def create_app(settings=None, access=None):
                             'question': question.strip(), 'mode': mode}
             JOB_OWNERS[job_id] = session
             JOB_CREATED[job_id] = time.time()
-        threading.Thread(target=run_job, args=(job_id, payload), daemon=True).start()
+        threading.Thread(target=run_job, args=(job_id, payload, access), daemon=True).start()
         return JSONResponse({'id': job_id}, status_code=202)
 
     async def job(request):
@@ -265,6 +272,11 @@ def create_app(settings=None, access=None):
         name = request.path_params['name']
         if not re.fullmatch(r'[a-zA-Z0-9_-]+\.html', name):
             return reply(404, 'Chart not found.')
+        if hasattr(access, 'get_chart'):
+            content=access.get_chart(session,name)
+            if content is not None:
+                return Response(content,media_type='text/html',headers={
+                    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"})
         with LOCK:
             prune()
             permitted = any(

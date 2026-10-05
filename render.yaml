@@ -1,0 +1,23 @@
+# Render Free: start with public recorded Demo; enable protected Live after Neon checks.
+services:
+  - type: web
+    name: causyn
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: CAUSYN_ENV
+        value: production
+      - key: CAUSYN_LIVE_ENABLED
+        value: "false"
+      - key: CAUSYN_REQUIRE_DURABLE_STATE
+        value: "true"
+      - key: CAUSYN_ACCESS_CODE
+        generateValue: true
+      - key: CAUSYN_RUNTIME_DIR
+        value: /runtime
+      - key: CAUSYN_DAILY_LIVE_LIMIT
+        value: "20"
+      - key: CAUSYN_HOURLY_SESSION_LIMIT
+        value: "5"
