@@ -4,7 +4,9 @@
 
 [Explore the deployed app](https://causyn.onrender.com) · [Metric definitions](docs/metric_dictionary.md) · [Deployment guide](README_FREE_HOSTING.md)
 
-Public **Demo** mode provides recorded examples without model requests. **Live** mode runs new investigations against PostgreSQL and Gemini and requires an owner access code.
+Public **Demo** mode provides recorded examples without model requests. **Live** mode runs new investigations against PostgreSQL and Gemini. With public Live enabled, visitors need no access code; private browser sessions and shared admission limits still apply.
+
+Start with one of four guided investigations: compare months, explore a monthly trend, rank categories or sellers, or inspect delivery performance. Date selectors and question previews make the supported scope explicit. Findings appear before technical evidence, with follow-up suggestions that require a new confirmation. Recorded examples have fixed dates; changing dates requires Live.
 
 ## What it does
 
@@ -96,10 +98,11 @@ The deployed application uses **Starlette/Uvicorn**, a **Docker** image on **Ren
 
 - `causyn_reader` has restricted reporting access; analytics run in read-only transactions with statement timeouts.
 - `causyn_web` reads and writes website-state tables without receiving the business reporting permissions.
-- Hosted Live requires an access code and uses secure, HttpOnly session cookies. Logout revokes the session.
+- Public Live uses secure, HttpOnly, SameSite browser-session cookies without a password. Ending a session revokes it. Set `CAUSYN_PUBLIC_LIVE=false` to restore owner-code access.
 - Jobs and charts are scoped to their issuing session. Hosted charts are stored in PostgreSQL, with a 24-hour lifetime; sessions last six hours.
 - Default admission limits allow one concurrent Live investigation, 20 investigations per UTC day globally, and five per UTC clock hour per session.
 - Request, tool-call, and timeout limits bound investigations. Cost estimates and admission limits are not hard monetary spending caps.
+- Public sessions are anonymous, not verified identities. New-session creation is throttled globally; a visitor can replace their cookie, but cannot reset the shared daily limit. This is a bounded portfolio demo, not an abuse-proof public SaaS service.
 
 The app uses one instance and one Uvicorn process. Active jobs are held in memory and do not resume after a restart. Saved charts persist across redeployment for the same valid session. Browser history is session-local, not a durable account history.
 
@@ -137,7 +140,8 @@ For the hosted migration and durable-state setup, follow [README_FREE_HOSTING.md
 | `DATABASE_URL` | Restricted analytics reader connection |
 | `CAUSYN_STATE_DATABASE_URL` | Separate hosted website-state connection |
 | `GEMINI_API_KEY` | Server-side Gemini access |
-| `CAUSYN_ACCESS_CODE` | Hosted Live sign-in code |
+| `CAUSYN_ACCESS_CODE` | Sign-in code when public Live is disabled |
+| `CAUSYN_PUBLIC_LIVE` | Allows bounded visitor Live without a code; defaults false, Render blueprint sets true |
 | `CAUSYN_LIVE_ENABLED` | Enables or disables Live investigations |
 
 Never commit `.env`, credentials, database dumps, or raw dataset files. In Render's environment-value fields, paste values without the surrounding quotes used in `.env` syntax. Hosted database URLs must explicitly enable TLS.
@@ -148,6 +152,7 @@ Never commit `.env`, credentials, database dumps, or raw dataset files. In Rende
 # Offline web checks: no Gemini requests
 python deployment_checks.py
 python free_hosting_checks.py
+python guided_checks.py
 python evaluate_depth.py --self-test
 
 # Database-backed checks: no Gemini requests

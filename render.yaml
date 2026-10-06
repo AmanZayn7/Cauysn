@@ -1,4 +1,4 @@
-# Render Free: start with public recorded Demo; enable protected Live after Neon checks.
+# Render Free: bounded public Live with private browser sessions and durable Neon state.
 services:
   - type: web
     name: causyn
@@ -10,6 +10,8 @@ services:
       - key: CAUSYN_ENV
         value: production
       - key: CAUSYN_LIVE_ENABLED
+        value: "true"
+      - key: CAUSYN_PUBLIC_LIVE
         value: "true"
       - key: CAUSYN_REQUIRE_DURABLE_STATE
         value: "true"

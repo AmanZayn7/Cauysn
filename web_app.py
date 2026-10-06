@@ -18,6 +18,7 @@ from pathlib import Path
 
 from deployment_config import WebSettings, runtime_path
 from web_access import create_access_store
+from guided_investigations import GUIDES, guided_question
 
 ROOT=Path(__file__).resolve().parent
 UI=ROOT/'ui'
@@ -30,6 +31,7 @@ PRESETS={
  'comparison':{'question':'Compare November 2017 with December 2017. Report merchandise value, order-count change and late-delivery-rate difference.'},
  'waterfall':{'question':'Create a waterfall chart from November 2017 to December 2017, splitting the merchandise-value change into order-volume and average-order-value contributions.'},
  'definition':{'question':'How is late delivery defined?'},
+ 'categories':{'question':'Show the leading categories by delivered merchandise value for November through December 2017.'},
 }
 
 
@@ -45,6 +47,15 @@ def demo_result(kind):
     if kind=='definition':
         common['answer']='A **late delivery** occurs when the actual customer delivery calendar date is later than the estimated delivery calendar date.\n\nThis compares calendar dates, rather than the exact time of day.\n\n[docs/metric_dictionary.md | metric-05 | Late delivery]'
         common['evidence']=[{'tool':'search_metric_dictionary','arguments':{'query':'late delivery definition'},'result':{'matches':[{'source':'docs/metric_dictionary.md','section_id':'metric-05','section':'Late delivery','passage':'Actual customer delivery calendar date is later than the estimated delivery calendar date.'}]}}]
+    elif kind=='categories':
+        common['answer']='## Leading categories\n\nFor November through December 2017, the leading categories by delivered merchandise value were:\n\n- **Watches and gifts:** R$164,849.26\n- **Health and beauty:** R$138,963.15\n- **Bed, bath and table:** R$138,038.79\n\nThe period included 12,802 delivered orders and R$1,713,798.56 in merchandise value across all categories. This is a recorded example, not a new query. Merchandise excludes freight and is not profit or corporate revenue. Source: analytics.category_monthly + analytics.monthly_performance.'
+        common['evidence']=[{'tool':'get_category_performance','arguments':{'start_month':'2017-11','end_month':'2017-12'},'result':{
+            'start_month':'2017-11','end_month':'2017-12','currency':'BRL',
+            'source':'analytics.category_monthly + analytics.monthly_performance',
+            'reference':{'delivered_orders':12802,'delivered_merchandise_value':'1713798.56'},
+            'rows':[{'category_label':label,'merchandise_value':value} for label,value in [
+                ('watches_gifts','164849.26'),('health_beauty','138963.15'),('bed_bath_table','138038.79')]],
+            'interpretation':'Three leading categories in this recorded example. Other categories are included in the period totals but not plotted. Category order counts overlap; merchandise value is not profit.'}}]
     elif kind=='comparison':
         common['answer']='## A quieter December\n\nDelivered merchandise value fell **26.50%**, from **R$987,765.37** in November to **R$726,033.19** in December 2017.\n\n- **1,776 fewer delivered orders**\n- Late-delivery rate improved by **4.95 percentage points**\n\nThese are delivered orders grouped by purchase month. Merchandise value excludes freight and represents neither profit nor corporate revenue. Currency: BRL.\n\nThe figures describe what changed; they do not prove why it happened. Source: analytics.monthly_performance.'
         common['evidence']=[{'tool':'compare_months','arguments':args,'result':{**args,'currency':'BRL','source':'analytics.monthly_performance','baseline_merchandise_value':'987765.37','comparison_merchandise_value':'726033.19','change_value':'-261732.18','change_pct':'-26.4974039330818','order_count_change':-1776,'late_delivery_change_percentage_points':'-4.94884558860277'}}]
@@ -182,8 +193,30 @@ def create_app(settings=None, access=None):
 
     async def config(request):
         return JSONResponse({'presets': PRESETS, 'local_only': not settings.production,
-                             'live_enabled': settings.live, 'auth_required': settings.auth_required,
+                             'live_enabled': settings.live, 'auth_required': settings.auth_required and not settings.public_live,
+                             'public_live': settings.public_live, 'guides': GUIDES,
+                             'limits': {'daily':settings.daily_limit,'hourly_session':settings.session_limit},
                              'authenticated': bool(owner(request))})
+
+    async def public_session(request):
+        # Only mint on a user-initiated Live request, never on a public page view.
+        if not settings.public_live or not settings.live:
+            return reply(403, 'Public Live is unavailable. Recorded examples remain available.')
+        try:
+            payload = await body(request)
+            if payload:
+                raise ValueError('Public session requests need an empty JSON object.')
+        except ValueError as error:
+            return reply(400, str(error))
+        if owner(request):
+            return JSONResponse({'authenticated': True})
+        if not access.login_allowed(limit=60):
+            return reply(429, 'Too many new Live sessions. Try a recorded example or return in 15 minutes.')
+        token = access.new_session()
+        response = JSONResponse({'authenticated': True})
+        response.set_cookie('causyn_session', token, max_age=21600, httponly=True,
+                            secure=settings.secure_cookie, samesite='strict', path='/')
+        return response
 
     async def login(request):
         if not access.login_allowed():
@@ -214,6 +247,10 @@ def create_app(settings=None, access=None):
     async def investigate(request):
         try:
             payload = await body(request)
+            if 'guided' in payload:
+                if payload.get('mode') != 'live':
+                    raise ValueError('Guided date selections require Live. Recorded examples have fixed dates.')
+                payload['question'] = guided_question(payload['guided'])
             question = payload.get('question')
             if not isinstance(question, str) or not 1 <= len(question.strip()) <= 1200:
                 raise ValueError('Enter a question of 1–1,200 characters.')
@@ -227,12 +264,12 @@ def create_app(settings=None, access=None):
             selected = payload.get('demo_id')
             if (not isinstance(selected, str) or selected not in PRESETS or
                     question.strip() != PRESETS[selected]['question']):
-                return reply(400, 'Demo supports the three recorded examples. Choose an example or switch to Live.')
+                return reply(400, 'Demo supports recorded examples only. Choose an example or switch to Live.')
         else:
             if not settings.live:
                 return reply(403, 'Live analysis is disabled on this deployment. Explore a recorded example.')
             if not session:
-                return reply(401, 'Sign in to use Live analysis.')
+                return reply(401, 'Start a Live browser session to investigate.' if settings.public_live else 'Sign in to use Live analysis.')
         with LOCK:
             prune()
             if mode == 'live' and any(j['status'] == 'running' and j['mode'] == 'live' for j in JOBS.values()):
@@ -314,6 +351,7 @@ def create_app(settings=None, access=None):
     app = Starlette(debug=False, lifespan=lifespan, routes=[
         Route('/healthz', health), Route('/api/config', config),
         Route('/api/login', login, methods=['POST']), Route('/api/logout', logout, methods=['POST']),
+        Route('/api/session', public_session, methods=['POST']),
         Route('/api/investigate', investigate, methods=['POST']),
         Route('/api/jobs/{job_id}', job), Route('/api/charts/{name}', chart),
         Route('/', asset), Route('/app.js', asset), Route('/style.css', asset)])
@@ -356,7 +394,7 @@ if __name__ == '__main__':
         settings = WebSettings()
         import uvicorn
         print(f'CAUSYN is ready: {settings.origin}', flush=True)
-        print('Demo is free. Live admission is limited; hosting requires owner sign-in.', flush=True)
+        print('Demo is recorded. Live is limited and uses private browser sessions.', flush=True)
         uvicorn.run(create_app(settings), host=settings.bind, port=settings.port, workers=1,
                     proxy_headers=False, access_log=False, server_header=False,
                     limit_concurrency=100, timeout_keep_alive=5, timeout_graceful_shutdown=15)

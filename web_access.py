@@ -38,7 +38,7 @@ class AccessStore:
     def digest(token):
         return hashlib.sha256(token.encode()).hexdigest()
 
-    def login_allowed(self):
+    def login_allowed(self, limit=10):
         # Global admission cap avoids trusting spoofable forwarded IP headers.
         # Wrong and successful attempts count. The owner may wait 15 minutes.
         bucket = str(int(time.time() // 900))
@@ -46,7 +46,7 @@ class AccessStore:
             db.execute('BEGIN IMMEDIATE')
             db.execute('DELETE FROM logins WHERE bucket != ?', (bucket,))
             row = db.execute('SELECT amount FROM logins WHERE bucket=?', (bucket,)).fetchone()
-            if row and row[0] >= 10:
+            if row and row[0] >= limit:
                 return False
             db.execute('INSERT INTO logins VALUES (?,1) ON CONFLICT(bucket) DO UPDATE SET amount=amount+1', (bucket,))
         return True
@@ -108,13 +108,13 @@ class PostgresAccessStore(AccessStore):
             db.execute("SET LOCAL statement_timeout='10s'")
             yield db
 
-    def login_allowed(self):
+    def login_allowed(self, limit=10):
         bucket=str(int(time.time()//900))
         with self.connection() as db:
             db.execute('SELECT pg_advisory_xact_lock(1129535820)')
             db.execute('DELETE FROM app_state.logins WHERE bucket != %s',(bucket,))
             row=db.execute('SELECT amount FROM app_state.logins WHERE bucket=%s',(bucket,)).fetchone()
-            if row and row[0]>=10:return False
+            if row and row[0]>=limit:return False
             db.execute('INSERT INTO app_state.logins VALUES (%s,1) ON CONFLICT(bucket) DO UPDATE SET amount=app_state.logins.amount+1',(bucket,))
         return True
 

@@ -13,6 +13,7 @@ jobs:
       - run: python -m pip install -r requirements.runtime.txt
       - run: python deployment_checks.py
       - run: python free_hosting_checks.py
+      - run: python guided_checks.py
       - run: python evaluate_depth.py --self-test
       - run: python verification.py --self-test
       - run: python sql_specialist.py --self-test

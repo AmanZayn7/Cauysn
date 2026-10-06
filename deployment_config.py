@@ -45,10 +45,12 @@ class WebSettings:
             self.origins.update({f'http://localhost:{self.port}', f'http://127.0.0.1:{self.port}'})
             self.hosts.update({f'localhost:{self.port}', f'127.0.0.1:{self.port}'})
         self.live = os.getenv('CAUSYN_LIVE_ENABLED', 'true' if not self.production else 'false').lower() == 'true'
+        self.public_live = os.getenv('CAUSYN_PUBLIC_LIVE', 'false').lower() == 'true'
         if self.production and self.live and os.getenv('CAUSYN_REQUIRE_DURABLE_STATE','false')=='true' and not os.getenv('CAUSYN_STATE_DATABASE_URL'):
             raise ValueError('This free deployment requires CAUSYN_STATE_DATABASE_URL before enabling Live.')
         self.access_code = os.getenv('CAUSYN_ACCESS_CODE', '')
-        self.auth_required = self.production or bool(self.access_code)
+        # Public Live still requires a private browser session, not an access code.
+        self.auth_required = self.production or bool(self.access_code) or self.public_live
         self.daily_limit = int(os.getenv('CAUSYN_DAILY_LIVE_LIMIT', '20'))
         self.session_limit = int(os.getenv('CAUSYN_HOURLY_SESSION_LIMIT', '5'))
         if self.daily_limit < 1 or self.session_limit < 1:
@@ -56,7 +58,7 @@ class WebSettings:
         if self.production:
             if parsed.scheme != 'https':
                 raise ValueError('Production requires an HTTPS CAUSYN_PUBLIC_ORIGIN.')
-            if len(self.access_code) < 24:
+            if not self.public_live and len(self.access_code) < 24:
                 raise ValueError('Production requires CAUSYN_ACCESS_CODE of at least 24 characters.')
             if self.live and (not os.getenv('DATABASE_URL') or not os.getenv('GEMINI_API_KEY')):
                 raise ValueError('Production Live requires DATABASE_URL and GEMINI_API_KEY.')

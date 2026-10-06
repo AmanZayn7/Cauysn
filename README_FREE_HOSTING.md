@@ -1,5 +1,7 @@
 # Render Free + Neon Free
 
+**Guided portfolio update:** the current `render.yaml` enables `CAUSYN_PUBLIC_LIVE=true` after the database setup has already been completed. Visitors use private anonymous sessions without entering an owner code. Existing migration steps below still apply to a new installation; owner sign-in steps apply only when public Live is false. Keep the owner code private for that fallback. For the current installation and smoke tests, follow `README_GUIDED_UPDATE.md`.
+
 This adapter moves authentication sessions, login throttling, Live admission counters and approved HTML charts to PostgreSQL. Business queries still use the read-only `causyn_reader` role. Control state uses a separate `causyn_web` role, with access only to `app_state`. No new Python dependency, model change or analytical feature is introduced.
 
 ## Install and measure first
