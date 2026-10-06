@@ -25,3 +25,5 @@
 .plot-value{display:flex;justify-content:space-between;gap:14px;padding:10px 0;border-bottom:1px solid #ffffff15;font-size:11px;line-height:1.7;color:#bec8da;overflow-wrap:anywhere}.plot-value strong{white-space:nowrap;font-variant-numeric:tabular-nums}.chart-card svg{max-height:none}
 
 #accessForm{display:grid;gap:14px;margin-top:24px}#accessCode{background:#191726;border:1px solid #625977;color:#fff;border-radius:10px;padding:13px;font:inherit}#accessSubmit{background:#8264c9;color:#fff;border:0;border-radius:10px;padding:13px;font:inherit;cursor:pointer}#accessSubmit:disabled{opacity:.5}
+
+.mark,.sidebar-seal{display:inline-flex;align-items:center}.mark svg,.sidebar-seal svg{width:.85em;height:.85em;display:block}
