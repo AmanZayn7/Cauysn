@@ -99,5 +99,26 @@ class TotalsTests(unittest.TestCase):
         second['result']['reference']['delivered_merchandise_value']='101'
         with self.assertRaises(ValueError):add_period_totals(self.draft,[self.event,second])
 
+    def test_both_category_directions_are_added_before_review(self):
+        changes=[('down_a','-30'),('down_b','-20'),('down_c','-10'),('up_a','25'),('up_b','15'),('up_c','5')]
+        event={'tool':'get_category_changes','arguments':{'baseline_month':'2017-11','comparison_month':'2017-12'},
+               'result':{'baseline_month':'2017-11','comparison_month':'2017-12','currency':'BRL',
+                         'overall_change':'-15','reconciled':True,'categories':[
+                             {'category_label':label,'baseline_value':'100','comparison_value':str(Decimal(100)+Decimal(change)),'change_value':change}
+                             for label,change in changes]}}
+        result=verify_final_response(json.dumps(self.draft),[event])
+        self.assertIn('Largest positive contributions:',result['answer'])
+        self.assertIn('Largest negative contributions:',result['answer'])
+        self.assertEqual(len(result['claims']),6)
+        self.assertEqual(result['numerical_check']['status'],'PASS')
+
+    def test_one_sided_categories_do_not_invent_changes(self):
+        event={'tool':'get_category_changes','arguments':{'baseline_month':'2017-11','comparison_month':'2017-12'},
+               'result':{'baseline_month':'2017-11','comparison_month':'2017-12','currency':'BRL',
+                         'overall_change':'-10','reconciled':True,'categories':[
+                             {'category_label':'a','baseline_value':'20','comparison_value':'10','change_value':'-10'}]}}
+        result=verify_final_response(json.dumps(self.draft),[event])
+        self.assertIn('No positive category changes',result['answer']);self.assertEqual(len(result['claims']),1)
+
 
 if __name__=='__main__': unittest.main(verbosity=2)

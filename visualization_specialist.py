@@ -7,6 +7,7 @@ import depth_visuals
 import html
 import json
 import uuid
+import os
 from decimal import Decimal
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from python_specialist import validate_plan as validate_months, decompose_mercha
 from verification import _number, check_numerical_evidence
 
 from deployment_config import runtime_path
+from chart_presentation import nice_ticks, compact, category_label, month_label
 CHART_DIRECTORY = runtime_path('reports', 'charts')
 VISUALIZATION_TOOL = {
     'type':'function', 'name':'investigate_visualization',
@@ -112,34 +114,30 @@ def render_svg(spec):
         else:start,end=Decimal(0),value
         running=end;segments.append((start,end))
     extrema=[Decimal(0)]+[v for pair in segments for v in pair]
-    low,high=min(extrema),max(extrema)
-    if low==high:high=low+1
-    pad=(high-low)*Decimal('0.12');high+=pad
-    if low<0:low-=pad
+    low,high,ticks=nice_ticks(min(extrema),max(extrema))
     width,height=1100,490;left,right,top,bottom=115,55,40,375
     plotwidth=width-left-right
     def y(value):return top+float((high-value)/(high-low))*(bottom-top)
-    axis=y(Decimal(0));parts=[f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" role="img" aria-labelledby="chart-title chart-desc"><title id="chart-title">{html.escape(spec["title"])}</title><desc id="chart-desc">BRL. Delivered orders grouped by purchase month. Exact values are also listed in the table.</desc>']
-    for tick in range(6):
-        value=low+(high-low)*tick/5;pos=y(value)
-        label=f'{value/1000000:.2f}m' if high>=1000000 else f'{value/1000:.0f}k' if high>=1000 else f'{value:.0f}'
-        parts.append(f'<line x1="{left}" y1="{pos:.2f}" x2="{width-right}" y2="{pos:.2f}" stroke="#e7edf5"/><text x="{left-15}" y="{pos+5:.2f}" text-anchor="end" font-size="14" fill="#63738a">{label}</text>')
-    parts.append(f'<text x="{left}" y="22" font-size="14" fill="#63738a">BRL</text><line x1="{left}" y1="{axis:.2f}" x2="{width-right}" y2="{axis:.2f}" stroke="#94a3b8"/>')
+    axis=y(Decimal(0));parts=[f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" font-family="system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" role="img" aria-labelledby="chart-title chart-desc"><title id="chart-title">{html.escape(spec["title"])}</title><desc id="chart-desc">BRL. Delivered orders grouped by purchase month. Exact values are also listed in the table.</desc>']
+    for value in ticks:
+        pos=y(value);label=compact(value)
+        parts.append(f'<line x1="{left}" y1="{pos:.2f}" x2="{width-right}" y2="{pos:.2f}" stroke="#283448"/><text x="{left-15}" y="{pos+5:.2f}" text-anchor="end" font-size="14" fill="#b4bfd3">{label}</text>')
+    parts.append(f'<text x="{left}" y="22" font-size="14" fill="#b4bfd3">BRL</text><line x1="{left}" y1="{axis:.2f}" x2="{width-right}" y2="{axis:.2f}" stroke="#b4bfd3"/>')
     step=plotwidth/len(rows);barwidth=min(150,step*.6)
     for index,(row,(start,end)) in enumerate(zip(rows,segments)):
         x=left+step*(index+.5)-barwidth/2
         upper,lower=min(y(start),y(end)),max(y(start),y(end))
-        color='#3456d1' if row['role']=='total' else '#d45568' if _number(row['value'])<0 else '#149980'
+        color='#9990eb' if row['role']=='total' else '#dc94a3' if _number(row['value'])<0 else '#82cfb6'
         amount=f'{_number(row["value"]):,.2f}'
         if row['role']=='change' and _number(row['value'])>0:amount='+'+amount
-        parts.append(f'<g class="bar" tabindex="0"><title>{html.escape(row["label"])}: {amount} BRL</title><rect x="{x:.2f}" y="{upper:.2f}" width="{barwidth}" height="{max(lower-upper,1):.2f}" rx="5" fill="{color}"/><text x="{x+barwidth/2:.2f}" y="{upper-12:.2f}" text-anchor="middle" font-size="17" font-weight="600" fill="#17243b">{amount}</text></g>')
-        words=row['label'].split();lines=[row['label']]
+        parts.append(f'<g class="bar" tabindex="0"><title>{html.escape(row["label"])}: {amount} BRL</title><rect x="{x:.2f}" y="{upper:.2f}" width="{barwidth}" height="{max(lower-upper,1):.2f}" rx="5" fill="{color}"/><text x="{x+barwidth/2:.2f}" y="{upper-12:.2f}" text-anchor="middle" font-size="17" font-weight="600" fill="#edf0f8">{amount}</text></g>')
+        words=row['label'].split();lines=[month_label(row['label'])]
         if len(row['label'])>17:lines=[' '.join(words[:2]),' '.join(words[2:])]
         for lineidx,line in enumerate(lines):
-            parts.append(f'<text x="{x+barwidth/2:.2f}" y="{bottom+35+lineidx*21}" text-anchor="middle" font-size="16" fill="#43536d">{html.escape(line)}</text>')
+            parts.append(f'<text x="{x+barwidth/2:.2f}" y="{bottom+35+lineidx*21}" text-anchor="middle" font-size="16" fill="#b4bfd3">{html.escape(line)}</text>')
         if waterfall and index<len(rows)-1:
             nextx=left+step*(index+1.5)-barwidth/2
-            parts.append(f'<line x1="{x+barwidth:.2f}" y1="{y(end):.2f}" x2="{nextx:.2f}" y2="{y(end):.2f}" stroke="#9aa8bc" stroke-dasharray="4 4"/>')
+            parts.append(f'<line x1="{x+barwidth:.2f}" y1="{y(end):.2f}" x2="{nextx:.2f}" y2="{y(end):.2f}" stroke="#546178" stroke-dasharray="4 4"/>')
     return ''.join(parts)+'</svg>'
 
 
@@ -151,11 +149,17 @@ def save_chart(spec, evidence, directory=None):
     first=spec.get('start_month',spec.get('baseline_month'));last=spec.get('end_month',spec.get('comparison_month'))
     name=f'{spec["chart_kind"]}_{first}_{last}_{uuid.uuid4().hex[:8]}.html'
     path=directory/name
-    table=''.join(f'<tr><td>{html.escape(row["label"])}</td><td>{_number(row["value"]):,.2f}</td></tr>' for row in spec['rows'])
+    table=''.join(f'<tr><td>{html.escape(category_label(row["label"]) if spec["chart_kind"]=="category_ranking" else month_label(row["label"]) if spec["chart_kind"] in ("monthly_trend","monthly_comparison") else row["label"])}<small class="source-id">{html.escape(row["label"])}</small></td><td>{_number(row["value"]):,.2f}</td></tr>' for row in spec['rows'])
+    from urllib.parse import urlsplit
+    back_link=os.getenv('CAUSYN_PUBLIC_ORIGIN') or os.getenv('RENDER_EXTERNAL_URL') or 'https://causyn.onrender.com'
+    url=urlsplit(back_link)
+    if url.scheme not in ('http','https') or not url.netloc or url.username or url.password or url.query or url.fragment or url.path not in ('','/'):
+        back_link='https://causyn.onrender.com'
     svg=render_svg(spec)
     content=f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CAUSYN | {html.escape(spec['title'])}</title><style>
-    *{{box-sizing:border-box}}body{{margin:0;background:#f3f6fb;color:#17243b;font:16px system-ui,-apple-system,sans-serif}}main{{max-width:1220px;margin:48px auto;padding:0 28px}}.brand{{font-size:13px;letter-spacing:.18em;color:#3456d1;font-weight:750}}h1{{font-size:32px;letter-spacing:-.035em;margin:14px 0 10px}}.sub{{color:#63738a;margin-bottom:28px}}.card{{background:white;border:1px solid #e4eaf4;border-radius:20px;padding:24px;box-shadow:0 10px 35px #192d5710}}.plot{{overflow-x:auto}}svg{{display:block;width:100%;min-width:700px;height:auto}}.bar:hover rect,.bar:focus rect{{filter:brightness(1.13)}}.note{{line-height:1.6;color:#566680;font-size:14px}}.badge{{display:inline-block;background:#e8f5f0;color:#16735b;padding:6px 11px;border-radius:20px;font-size:12px}}details{{margin-top:24px}}summary{{cursor:pointer;font-weight:600}}table{{border-collapse:collapse;width:100%;margin-top:16px}}th,td{{text-align:left;padding:12px;border-bottom:1px solid #e7edf5}}th:last-child,td:last-child{{text-align:right}}pre{{overflow:auto;background:#f7f9fc;padding:18px;font-size:12px}}@media(max-width:600px){{main{{margin:24px auto;padding:0 14px}}h1{{font-size:26px}}.card{{padding:16px}}}}
-    </style><main><div class="brand">CAUSYN / EVIDENCE TO INSIGHT</div><h1>{html.escape(spec['title'])}</h1><p class="sub">{first} → {last} · Delivered orders grouped by purchase month</p><section class="card"><span class="badge">Verified chart values</span><div class="plot">{svg}</div><p class="note">Merchandise value excludes freight and is not profit or corporate revenue. Source: {html.escape(spec['source'])}.</p><p class="note">{html.escape(spec['interpretation'])}</p><details open><summary>Exact plotted values · {html.escape(spec["unit"])}</summary><table><thead><tr><th>Measure</th><th>{html.escape(spec["unit"])}</th></tr></thead><tbody>{table}</tbody></table></details><details><summary>Chart specification</summary><pre>{html.escape(json.dumps(spec,indent=2))}</pre></details></section></main></html>'''
+    *{{box-sizing:border-box}}body{{margin:0;background:#0e0d17;color:#edf0f8;font:16px system-ui,-apple-system,sans-serif}}main{{max-width:1220px;margin:48px auto;padding:0 28px}}.brand{{font-size:13px;letter-spacing:.18em;color:#b6a5ff;font-weight:750}}h1{{font-size:32px;letter-spacing:-.035em;margin:14px 0 10px}}.sub{{color:#b4bfd3;margin-bottom:28px}}.card{{background:#151420;border:1px solid #363046;border-radius:20px;padding:24px;box-shadow:0 10px 35px #192d5710}}.plot{{overflow-x:auto}}svg{{display:block;width:100%;min-width:700px;height:auto}}.bar:hover rect,.bar:focus rect{{filter:brightness(1.13)}}.note{{line-height:1.6;color:#b4bfd3;font-size:14px}}.badge{{display:inline-block;background:#173b33;color:#82cfb6;padding:6px 11px;border-radius:20px;font-size:12px}}details{{margin-top:24px}}summary{{cursor:pointer;font-weight:600}}table{{border-collapse:collapse;width:100%;margin-top:16px}}th,td{{text-align:left;padding:12px;border-bottom:1px solid #363046}}th:last-child,td:last-child{{text-align:right}}pre{{overflow:auto;background:#0e0d17;padding:18px;font-size:12px}}@media(max-width:600px){{main{{margin:24px auto;padding:0 14px}}h1{{font-size:26px}}.card{{padding:16px}}}}
+    .brand-row{{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap}}.back-link{{color:#c6b7ff;font-size:13px;text-decoration:none;border:1px solid #514462;border-radius:8px;padding:10px 14px}}.back-link:hover{{background:#231c32}}.source-id{{display:block;color:#a5a0b7;font-size:11px;margin-top:5px;overflow-wrap:anywhere}}table td:first-child{{overflow-wrap:anywhere}}body{{color-scheme:dark}}
+    </style><main><div class="brand-row"><div class="brand">CAUSYN / EVIDENCE TO INSIGHT</div><a class="back-link" href="{html.escape(back_link,quote=True)}">← Back to Causyn</a></div><h1>{html.escape(spec['title'])}</h1><p class="sub">{first} → {last} · Delivered orders grouped by purchase month</p><section class="card"><span class="badge">Verified chart values</span><div class="plot">{svg}</div><p class="note">Merchandise value excludes freight and is not profit or corporate revenue. Source: {html.escape(spec['source'])}.</p><p class="note">{html.escape(spec['interpretation'])}</p><details open><summary>Exact plotted values · {html.escape(spec["unit"])}</summary><table><thead><tr><th>Measure</th><th>{html.escape(spec["unit"])}</th></tr></thead><tbody>{table}</tbody></table></details><details><summary>Chart specification</summary><pre>{html.escape(json.dumps(spec,indent=2))}</pre></details></section></main></html>'''
     path.write_text(content,encoding='utf-8')
     return {'path':str(path.resolve()),'relative_path':'reports/charts/' + name if directory==CHART_DIRECTORY else name,
             'format':'html','specification':spec,'chart_check':verification,

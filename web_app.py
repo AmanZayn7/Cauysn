@@ -328,7 +328,7 @@ def create_app(settings=None, access=None):
             'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"})
 
     async def asset(request):
-        names = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css'}
+        names = {'/': 'index.html', '/app.js': 'app.js', '/presentation.js':'presentation.js', '/style.css': 'style.css'}
         name = names[request.url.path]
         media = {'html': 'text/html', 'js': 'text/javascript', 'css': 'text/css'}[name.rsplit('.', 1)[-1]]
         return Response((UI / name).read_bytes(), media_type=media)
@@ -354,7 +354,7 @@ def create_app(settings=None, access=None):
         Route('/api/session', public_session, methods=['POST']),
         Route('/api/investigate', investigate, methods=['POST']),
         Route('/api/jobs/{job_id}', job), Route('/api/charts/{name}', chart),
-        Route('/', asset), Route('/app.js', asset), Route('/style.css', asset)])
+        Route('/', asset), Route('/app.js', asset), Route('/presentation.js', asset), Route('/style.css', asset)])
 
     async def safeguards(request, call_next):
         if request.url.path != '/healthz' and request.headers.get('host') not in settings.hosts:

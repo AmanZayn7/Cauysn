@@ -40,4 +40,35 @@ def add_period_totals(payload, evidence):
                    'metric':metric,'unit':unit,'scope':SCOPE,'value':value}
             if claim not in claims:
                 claims.append(claim)
+    # Complete both directions of category contributions before semantic review.
+    # Do not discard the original model prose or invalid original claims.
+    from verification import check_numerical_evidence, _number
+    from chart_presentation import category_label
+    comparisons={}
+    for index,event in enumerate(evidence):
+        data=event.get('result')
+        if event.get('tool')!='get_category_changes' or not isinstance(data,dict) or 'error' in data:
+            continue
+        if check_numerical_evidence({'evidence':[event]})['status']!='PASS':
+            raise ValueError('Category contributions did not pass arithmetic checks.')
+        period=(data['baseline_month'],data['comparison_month'])
+        if period in comparisons:
+            if comparisons[period]!=data['categories']:
+                raise ValueError('Conflicting category contributions for the same comparison.')
+            continue
+        comparisons[period]=data['categories']
+        answer+=f'\n\n### Tool-backed category contributions: {period[0]} → {period[1]}'
+        for positive,title in ((False,'Largest negative contributions'),(True,'Largest positive contributions')):
+            rows=[row for row in data['categories'] if (_number(row['change_value'])>0 if positive else _number(row['change_value'])<0)]
+            rows=sorted(rows,key=lambda row:((-1 if positive else 1)*_number(row['change_value']),row['category_label']))[:3]
+            answer+='\n\n'+title+':'
+            if not rows:answer+='\nNo '+('positive' if positive else 'negative')+' category changes in this comparison.'
+            for row in rows:
+                value=_number(row['change_value']).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)
+                answer+=f'\n- {category_label(row["category_label"])}: {"+" if value>0 else ""}R$ {value:,.2f}'
+                claim={'evidence_index':index,'baseline_month':period[0],'comparison_month':period[1],
+                       'scope':SCOPE,'category_label':row['category_label'],
+                       'metric':'change_value','unit':'BRL','value':str(value)}
+                if claim not in claims:claims.append(claim)
+        answer+='\n\nSelected arithmetic contributions, not proven causes. Other categories may offset these changes.'
     return {'answer':answer,'claims':claims}
