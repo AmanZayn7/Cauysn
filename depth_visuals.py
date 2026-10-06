@@ -42,13 +42,13 @@ def render_svg(spec):
         x=lambda i:left+(right-left)*i/max(1,len(rows)-1)
         for t in range(5):
             v=high*t/4;py=y(v)
-            pieces.append(f'<line x1="{left}" x2="{right}" y1="{py}" y2="{py}" stroke="#283448"/><text x="{left-8}" y="{py+4}" text-anchor="end" fill="#b4bfd3" font-size="10">{v/1000:.0f}k</text>')
+            pieces.append(f'<line x1="{left}" x2="{right}" y1="{py}" y2="{py}" stroke="#e7edf5"/><text x="{left-8}" y="{py+4}" text-anchor="end" fill="#566680" font-size="10">{v/1000:.0f}k</text>')
         points=' '.join(f'{x(i):.2f},{y(r["value"]):.2f}' for i,r in enumerate(rows))
-        pieces.append(f'<polyline points="{points}" fill="none" stroke="#b6a5ff" stroke-width="2.5"/>')
+        pieces.append(f'<polyline points="{points}" fill="none" stroke="#6d5bd0" stroke-width="2.5"/>')
         step=max(1,(len(rows)+4)//5)
         for i,r in enumerate(rows):
-            pieces.append(f'<circle tabindex="0" cx="{x(i)}" cy="{y(r["value"])}" r="4" fill="#b6a5ff"><title>{html.escape(r["label"])}: {number(r["value"]):,.2f} BRL</title></circle>')
-            if i%step==0 or i==len(rows)-1: pieces.append(f'<text x="{x(i)}" y="310" text-anchor="middle" fill="#b4bfd3" font-size="10">{r["label"]}</text>')
+            pieces.append(f'<circle tabindex="0" cx="{x(i)}" cy="{y(r["value"])}" r="4" fill="#6d5bd0"><title>{html.escape(r["label"])}: {number(r["value"]):,.2f} BRL</title></circle>')
+            if i%step==0 or i==len(rows)-1: pieces.append(f'<text x="{x(i)}" y="310" text-anchor="middle" fill="#566680" font-size="10">{r["label"]}</text>')
     else:
         for i,r in enumerate(rows):
             y=48+i*37;amount=number(r['value']);width=float(amount/high)*290
@@ -57,6 +57,6 @@ def render_svg(spec):
             amount_text=f'{amount:,.2f}'+('%' if spec['unit']=='percent' else '')
             title=f'{label}: {amount_text} {spec["unit"]}'
             if spec['unit']=='percent':title+=f'; {r["late_orders"]} late / {r["assessable_delivery_orders"]} assessable orders'
-            pieces.append(f'<g tabindex="0"><title>{html.escape(title)}</title><text x="180" y="{y+17}" text-anchor="end" fill="#c4cee0" font-size="11">{html.escape(display)}</text><rect x="192" y="{y}" width="{width:.2f}" height="24" rx="3" fill="#9990eb"/><text x="{200+width:.2f}" y="{y+17}" fill="#edf0f8" font-size="11">{amount_text}</text></g>')
-    pieces.append(f'<text x="20" y="19" fill="#b4bfd3" font-size="11">{spec["unit"]}</text></svg>')
+            pieces.append(f'<g tabindex="0"><title>{html.escape(title)}</title><text x="180" y="{y+17}" text-anchor="end" fill="#43536d" font-size="11">{html.escape(display)}</text><rect x="192" y="{y}" width="{width:.2f}" height="24" rx="3" fill="#8274d8"/><text x="{200+width:.2f}" y="{y+17}" fill="#17243b" font-size="11">{amount_text}</text></g>')
+    pieces.append(f'<text x="20" y="19" fill="#566680" font-size="11">{spec["unit"]}</text></svg>')
     return ''.join(pieces)
