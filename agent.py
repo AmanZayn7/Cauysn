@@ -25,6 +25,7 @@ from document_specialist import DocumentSpecialist, DOCUMENT_TOOL
 from python_specialist import PythonSpecialist, PYTHON_TOOL
 from visualization_specialist import VisualizationSpecialist, VISUALIZATION_TOOL, check_chart
 from verifier_specialist import VerifierSpecialist, ReviewRejected
+from answer_completeness import add_period_totals
 from analytics_tools import (
     compare_months,
     encode_value,
@@ -174,11 +175,14 @@ average_merchandise_value_per_order:BRL, assessable_delivery_orders:orders,
 late_orders:orders, late_delivery_pct:percent.
 For get_monthly_trend, get_category_performance, get_seller_performance and
 get_state_delivery claims, include start_month and end_month (inclusive YYYY-MM).
-Each claim must identify exactly one row using the exact purchase_month,
+Row claims must identify exactly one row using the exact purchase_month,
 category_label, seller_id or customer_state, respectively. Use the numeric
 metric keys returned in that row; counts have unit orders or items, monetary
-values BRL, and late_delivery_pct percent. No claim may point to a summary,
-reference or omitted ranking row. Do not calculate extra metrics. State that
+values BRL, and late_delivery_pct percent. For validated reference totals only,
+use aggregation="period_total", start_month and end_month, and NO row identifier.
+Allowed reference metrics: delivered_merchandise_value:BRL, delivered_orders:orders,
+assessable_delivery_orders:orders, late_orders:orders. Never sum overlapping group
+order counts. Do not claim an omitted ranking row or calculate extra metrics. State that
 rankings are by delivered merchandise value, not profit. Average item value is
 not average order value. Category/seller order counts overlap and cannot be
 added. Seller IDs are anonymized. State means customer destination, not seller
@@ -212,6 +216,10 @@ def verify_final_response(raw_text, evidence):
         raise RuntimeError("Final response contained no readable answer.")
     if not isinstance(payload["claims"], list):
         raise RuntimeError("Final numerical claims must be a list.")
+    try:
+        payload=add_period_totals(payload,evidence)
+    except (ValueError,TypeError,KeyError) as error:
+        raise RuntimeError('Range totals could not be validated. No answer displayed.') from error
     if re.search(
         r"\b(?:decreased|fell|dropped|declined)\s+by\s*(?:\*\*)?\s*(?:(?:BRL|R\$)\s*)?[-−]\s*\d",
         payload["answer"], re.IGNORECASE,

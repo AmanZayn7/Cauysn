@@ -4,7 +4,7 @@ Numerical claims must explicitly identify their evidence, metric, units and
 purchase-month scope. These checks do not parse or verify free-text prose.
 """
 
-from depth_contracts import TOOLS as DEPTH_TOOLS, validate_result as validate_depth_result
+from depth_contracts import TOOLS as DEPTH_TOOLS, PERIOD_TOTAL_UNITS, validate_result as validate_depth_result
 import re
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 
@@ -142,7 +142,10 @@ def _claim_expected(result, claim):
         raise ValueError("Claim must be an object.")
     event, data = _event(result, claim.get("evidence_index"))
     tool, metric = event["tool"], claim.get("metric")
-    unit = METRIC_UNITS[tool].get(metric)
+    aggregation = claim.get('aggregation')
+    if aggregation is not None and (tool not in DEPTH_TOOLS or aggregation != 'period_total'):
+        raise ValueError('Unsupported claim aggregation.')
+    unit = PERIOD_TOTAL_UNITS.get(metric) if aggregation else METRIC_UNITS[tool].get(metric)
     if unit is None or claim.get("unit") != unit:
         raise ValueError("Unsupported metric or incorrect unit.")
     if claim.get("scope") != SCOPE:
@@ -153,10 +156,15 @@ def _claim_expected(result, claim):
         for field in ('start_month','end_month'):
             if claim.get(field)!=arguments[field]: raise ValueError('Claim range mismatch.')
         key=DEPTH_TOOLS[tool][0]
-        label=claim.get(key)
-        matches=[r for r in data['rows'] if r[key]==label]
-        if not isinstance(label,str) or len(matches)!=1: raise ValueError('Claim group mismatch.')
-        row=matches[0]
+        if aggregation == 'period_total':
+            if any(field in claim for field in ('purchase_month','category_label','seller_id','customer_state')):
+                raise ValueError('Period totals cannot identify a group row.')
+            row=data['reference']
+        else:
+            label=claim.get(key)
+            matches=[r for r in data['rows'] if r[key]==label]
+            if not isinstance(label,str) or len(matches)!=1: raise ValueError('Claim group mismatch.')
+            row=matches[0]
     elif tool == "get_monthly_metrics":
         row = data.get("metrics", {})
         evidence_month = _month(row.get("purchase_month"))

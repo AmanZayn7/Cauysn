@@ -10,6 +10,10 @@ TOOLS = {
     'get_state_delivery': ('customer_state', {'delivered_orders':'orders', 'assessable_delivery_orders':'orders', 'late_orders':'orders', 'late_delivery_pct':'percent'}),
 }
 SCOPE = 'delivered_orders_by_purchase_month'
+PERIOD_TOTAL_UNITS = {
+    'delivered_orders':'orders', 'delivered_merchandise_value':'BRL',
+    'assessable_delivery_orders':'orders', 'late_orders':'orders',
+}
 
 def month_date(value):
     if not isinstance(value,str): raise ValueError('Months must be strings.')

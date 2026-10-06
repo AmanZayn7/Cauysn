@@ -40,6 +40,10 @@ Review these points:
   not seller locations; small samples cannot establish performance differences.
   State charts apply a minimum of 30 assessable orders, disclosed in chart notes.
   Verify each range claim's group identifier and inclusive start/end months.
+  Claims with aggregation="period_total" refer to validated reference totals,
+  not a group row. They require inclusive start/end months and no group identifier.
+  Those totals include all delivered orders, not only groups plotted in rankings.
+  A tool-backed totals section is part of the draft and must pass the same review.
 - Document citations must support the nearby statement, not merely refer to a
   retrieved section. No refund policy/deadline can be inferred from metric rules.
 - Failed tools give no numerical evidence. Missing dates should prompt a question.
