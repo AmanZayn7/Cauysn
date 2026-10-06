@@ -19,7 +19,7 @@ def main():
     with psycopg.connect(dsn,connect_timeout=5) as connection:
         if connection.execute("SELECT 1 FROM pg_roles WHERE rolname='causyn_reader'").fetchone() is None:
             connection.execute('CREATE ROLE causyn_reader LOGIN')
-        connection.execute(sql.SQL('ALTER ROLE causyn_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD {}').format(sql.Literal(password)))
+        connection.execute(sql.SQL('ALTER ROLE causyn_reader LOGIN NOCREATEDB NOCREATEROLE PASSWORD {}').format(sql.Literal(password)))
         connection.execute("ALTER ROLE causyn_reader SET default_transaction_read_only='on'")
         database=connection.execute('SELECT current_database()').fetchone()[0]
         connection.execute(sql.SQL('GRANT CONNECT ON DATABASE {} TO causyn_reader').format(sql.Identifier(database)))

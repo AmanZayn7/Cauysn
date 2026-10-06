@@ -16,10 +16,10 @@ def main():
     with psycopg.connect(dsn,connect_timeout=10) as db:
         if db.execute("SELECT 1 FROM pg_roles WHERE rolname='causyn_web'").fetchone() is None:
             db.execute('CREATE ROLE causyn_web LOGIN')
-        db.execute(sql.SQL('ALTER ROLE causyn_web LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD {}').format(sql.Literal(password)))
+        db.execute(sql.SQL('ALTER ROLE causyn_web LOGIN NOCREATEDB NOCREATEROLE PASSWORD {}').format(sql.Literal(password)))
         database=db.execute('SELECT current_database()').fetchone()[0]
         db.execute(sql.SQL('GRANT CONNECT ON DATABASE {} TO causyn_web').format(sql.Identifier(database)))
-        db.execute('CREATE SCHEMA IF NOT EXISTS app_state AUTHORIZATION causyn_web')
+        db.execute('CREATE SCHEMA IF NOT EXISTS app_state')
         db.execute('REVOKE ALL ON SCHEMA app_state FROM PUBLIC')
         db.execute('GRANT USAGE ON SCHEMA app_state TO causyn_web')
         for schema in ('raw','staging','analytics'):

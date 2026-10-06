@@ -10,7 +10,7 @@ services:
       - key: CAUSYN_ENV
         value: production
       - key: CAUSYN_LIVE_ENABLED
-        value: "false"
+        value: "true"
       - key: CAUSYN_REQUIRE_DURABLE_STATE
         value: "true"
       - key: CAUSYN_ACCESS_CODE
