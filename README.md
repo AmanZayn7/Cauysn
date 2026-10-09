@@ -2,7 +2,7 @@
 
 **A multi-agent analytics workspace that turns questions about historical ecommerce data into checked answers, traceable evidence, and charts.**
 
-[Explore the deployed app](https://causyn.onrender.com) · [Metric definitions](docs/metric_dictionary.md) · [Deployment guide](README_FREE_HOSTING.md)
+[Explore the deployed app](https://causyn.onrender.com) · [Metric definitions](docs/metric_dictionary.md) · [Deployment guide](docs/hosting.md)
 
 Public **Demo** mode provides recorded examples without model requests. **Live** mode runs new investigations against PostgreSQL and Gemini. With public Live enabled, visitors need no access code; private browser sessions and shared admission limits still apply.
 
@@ -131,7 +131,7 @@ Download the [Olist dataset](https://www.kaggle.com/datasets/olistbr/brazilian-e
 
 Load with `load_raw_data.py`, then use the numbered SQL scripts for auditing, staging, analytics, validation, and access control. Install the additional reporting views with `install_analysis_depth.py --user YOUR_LOCAL_OWNER`. The raw loader replaces the raw copy on reruns; use it on your intended project database.
 
-For the hosted migration and durable-state setup, follow [README_FREE_HOSTING.md](README_FREE_HOSTING.md). Owner credentials are for manual administration, not the application runtime.
+For the hosted migration and durable-state setup, follow [hosting guide](docs/hosting.md). Owner credentials are for manual administration, not the application runtime.
 
 ### Private configuration
 
@@ -166,6 +166,15 @@ python evaluate_depth.py --live --case categories
 ```
 
 Reports are saved under `evaluations/results/`. In the deployed smoke tests, document retrieval, known category totals, chart delivery, sign-out protection, chart persistence after redeployment, and mobile presentation were checked. These checks cover the tested paths, not every possible question.
+
+## Documentation
+
+- [Reporting analyses](docs/analysis.md)
+- [Answer verification](docs/answer-verification.md)
+- [Guided investigations](docs/guided-investigations.md)
+- [Interface](docs/interface.md) and [chart presentation](docs/presentation.md)
+- [Deployment and database migration](docs/deployment.md)
+- [Render and Neon setup](docs/hosting.md)
 
 ## Project map
 
